@@ -96,13 +96,11 @@ if 'estoque' not in st.session_state:
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
     
-    # Gera todas as posições possíveis
     posicoes_possiveis = []
     for f in range(1, 15):
         for n in range(1, altura_max + 1):
             posicoes_possiveis.append((f, n))
             
-    # Aplica a capacidade (corta o final se diminuir)
     posicoes_validas = posicoes_possiveis[:capacidade]
 
     for f in range(1, 15):
@@ -214,7 +212,7 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
-            # Preenche do Fundo para a Frente (Descending)
+            # Fileira DESCENDENTE (Preenche do Fundo)
             vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[False, True])
             agora = datetime.now().strftime("%d/%m %H:%M")
             for i in range(int(qtd_in)):
@@ -266,7 +264,6 @@ with tab_sai:
     if st.button("⚪ Confirmar Saída"):
         if limite_saida > 0:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
-            
             alvos = df_atual[df_atual['Status'].isin(filtro)].copy()
             alvos['ID_NUM'] = pd.to_numeric(alvos['ID'], errors='coerce')
             alvos = alvos.sort_values(by='ID_NUM')
@@ -284,6 +281,7 @@ st.subheader("🗺️ Mapa Visual")
 df_mapa = df_atual.copy()
 if not df_mapa.empty:
     df_mapa['ID'] = df_mapa['ID'].astype(str)
+    # Aqui inicializa o visual com o Status real (Reservado já nasce Reservado)
     df_mapa['Visual'] = df_mapa['Status']
     df_mapa['Aura_FEFO'] = False
     hoje = date.today()
@@ -294,14 +292,13 @@ if not df_mapa.empty:
     lote_ant = None
     for idx, row in df_ordem.iterrows():
         if row['Status'] in ["Disponível", "Reservado"]:
-            # Aura amarela de validade
             if row['Validade'] and (row['Validade'] - hoje).days <= 180: 
                 df_mapa.at[idx, 'Aura_FEFO'] = True
             
-            # --- CORREÇÃO AQUI: Reservado GANHA de Troca de Lote ---
+            # --- CORREÇÃO DEFINITIVA ---
             if lote_ant is not None and row['Lote'] != lote_ant:
-                # Só pinta de AZUL se NÃO for Reservado (Reservado tem prioridade Laranja)
-                if row['Status'] != 'Reservado':
+                # SE FOR RESERVADO, NÃO TOCA NA COR!
+                if row['Status'] == 'Disponível':
                     df_mapa.at[idx, 'Visual'] = 'TROCA'
             
             lote_ant = row['Lote']
@@ -318,15 +315,17 @@ if not df_mapa.empty:
                 v = mapa_v.loc[r, c]
                 fefo = mapa_fefo.loc[r, c]
                 borda = "border: 4px solid #FFFF00; box-shadow: inset 0 0 10px #FFFF00;" if fefo else "border: 1px solid #dee2e6;"
-                if v == "TROCA": color = 'background-color: #007bff; color: white;' 
-                elif v == "Disponível": color = 'background-color: #28a745; color: white;' 
-                elif v == "Reservado": color = 'background-color: #fd7e14; color: white;' 
+                
+                # Hierarquia de Cores
+                if v == "Reservado": color = 'background-color: #fd7e14; color: white;' # Laranja (Priority)
+                elif v == "TROCA": color = 'background-color: #007bff; color: white;'   # Azul
+                elif v == "Disponível": color = 'background-color: #28a745; color: white;' # Verde
                 elif v == "Vazio": color = 'background-color: #e9ecef; color: #333;' 
                 else: color = 'background-color: transparent; color: transparent; border: none;' 
+                
                 style_df.loc[r, c] = f'{color} {borda} font-size: 10px; font-weight: bold; text-align: center; height: 85px; min-width: 105px; white-space: pre-wrap; border-radius: 8px;'
         return style_df
 
-    # Visual com Fileira Maior na Esquerda
     st.table(mapa_t[sorted(mapa_t.columns, reverse=True)].sort_index(ascending=False).style.apply(style_fn, axis=None))
 
 # --- TABELA DETALHADA ---
