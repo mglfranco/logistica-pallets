@@ -49,7 +49,6 @@ def salvar_dados():
             ])
             conn.update(worksheet="Config_Ruas", data=df_cfg)
             
-            # Salva a capacidade global atualizada
             df_g = pd.DataFrame([{"cap_galpao": st.session_state.cap_total_galpao, "cap_padrao": st.session_state.capacidade_padrao}])
             conn.update(worksheet="Config_Global", data=df_g)
             
@@ -98,26 +97,43 @@ if 'estoque' not in st.session_state:
     st.session_state.cap_total_galpao = 2000
     carregar_dados() 
 
+# --- CORREÇÃO AQUI: LÓGICA DO CHÃO (NÍVEL 1) PRIMEIRO ---
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
     posicoes_uteis = []
     altura_saida = max(1, altura_max - 1)
 
+    # 1. GERA AS POSIÇÕES FÍSICAS POSSÍVEIS
+    # Ordem: Fileira 1 -> Nivel 1, Nivel 2, Nivel 3...
     for f in range(1, 15):
         limite_f = altura_saida if f == 1 else altura_max
-        for n in range(altura_max, 0, -1):
-            if n <= limite_f: posicoes_uteis.append((f, n))
+        # MUDANÇA: Loop de 1 até altura_max (Crescente: Chão -> Teto)
+        for n in range(1, altura_max + 1):
+            if n <= limite_f:
+                posicoes_uteis.append((f, n))
     
+    # 2. APLICA A CAPACIDADE (Corta quem sobrar)
+    # Como a lista foi criada do chão pro teto, o "corte" tira os últimos (tetos/fundos)
+    posicoes_validas = posicoes_uteis[:capacidade]
+
+    # 3. PREENCHE O DATAFRAME
     for f in range(1, 15):
         for n in range(1, 4):
             status = "Vazio"
             id_p = "--"
             limite_atual = altura_saida if f == 1 else altura_max
-            if n > limite_atual: status = "BLOQUEADO"
-            elif (f, n) in posicoes_uteis[:capacidade]:
-                idx_num = posicoes_uteis.index((f, n)) + 1
-                id_p = f"{idx_num:02d}"
-            else: status = "BLOQUEADO"
+            
+            # Se a posição física existe...
+            if n <= limite_atual:
+                # ...e está dentro da capacidade escolhida
+                if (f, n) in posicoes_validas:
+                    # Calcula ID baseado na ordem da lista (ID 01 será F1 N1)
+                    idx_num = posicoes_validas.index((f, n)) + 1
+                    id_p = f"{idx_num:02d}"
+                else:
+                    status = "BLOQUEADO"
+            else:
+                status = "BLOQUEADO"
             
             dados.append({
                 "Rua": nome_rua, "Fileira": f, "Nivel": n, "ID": id_p,
@@ -125,10 +141,14 @@ def inicializar_rua(nome_rua, capacidade, altura_max):
             })
     
     df_nova = pd.DataFrame(dados)
+    
+    # Atualiza o Estoque Global
     if st.session_state.estoque.empty:
         st.session_state.estoque = df_nova
     else:
+        # Remove dados antigos dessa rua e põe os novos
         st.session_state.estoque = pd.concat([st.session_state.estoque[st.session_state.estoque['Rua'] != nome_rua], df_nova])
+    
     st.session_state.config_ruas[nome_rua] = {'cap': capacidade, 'alt': altura_max}
     salvar_dados()
 
@@ -154,10 +174,8 @@ with st.sidebar:
             inicializar_rua(rua_sel, novo_cap, novo_alt)
             st.rerun()
 
-    # --- NOVA ÁREA: CAPACIDADE GLOBAL ---
     st.divider()
     st.header("🏢 Galpão Global")
-    # O on_change garante que salve assim que você alterar o número
     st.session_state.cap_total_galpao = st.number_input(
         "Capacidade Total do Galpão", 
         min_value=1, 
@@ -198,7 +216,7 @@ c2.metric("Livres", qtd_vazio)
 c3.metric("Disponíveis", qtd_disp)
 c4.metric("Reservados", qtd_res)
 
-# Barra Global (Calculada com a nova capacidade global)
+# Barra Global
 ocupados_global = len(st.session_state.estoque[st.session_state.estoque['Status'].isin(['Disponível', 'Reservado'])]) if not st.session_state.estoque.empty else 0
 perc = (ocupados_global / st.session_state.cap_total_galpao) * 100
 st.progress(min(perc/100, 1.0))
@@ -218,7 +236,7 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
-            # Ordena numérica para preencher corretamente
+            # Ordena: Fileira (Desc) e Nivel (Asc) -> Preenche fundo e sobe
             vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[False, True])
             agora = datetime.now().strftime("%d/%m %H:%M")
             for i in range(int(qtd_in)):
@@ -238,7 +256,6 @@ with tab_res:
     if st.button("🟠 Reservar"):
         if not cli_res: st.warning("Digite o cliente")
         else:
-            # Ordenação numérica correta do ID
             disp = df_atual[df_atual['Status'] == 'Disponível'].copy()
             disp['ID_NUM'] = pd.to_numeric(disp['ID'], errors='coerce')
             disp = disp.sort_values(by='ID_NUM')
@@ -271,8 +288,6 @@ with tab_sai:
     if st.button("⚪ Confirmar Saída"):
         if limite_saida > 0:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
-            
-            # Ordenação numérica correta do ID
             alvos = df_atual[df_atual['Status'].isin(filtro)].copy()
             alvos['ID_NUM'] = pd.to_numeric(alvos['ID'], errors='coerce')
             alvos = alvos.sort_values(by='ID_NUM')
@@ -294,7 +309,6 @@ if not df_mapa.empty:
     df_mapa['Aura_FEFO'] = False
     hoje = date.today()
 
-    # Ordenação Numérica para o Loop de Cores
     df_mapa['ID_NUM'] = pd.to_numeric(df_mapa['ID'], errors='coerce')
     df_ordem = df_mapa[df_mapa['ID'] != '--'].sort_values(by='ID_NUM')
     
