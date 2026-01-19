@@ -93,37 +93,27 @@ if 'estoque' not in st.session_state:
     st.session_state.cap_total_galpao = 2000
     carregar_dados() 
 
-# --- NOVA LÓGICA DE ESTRUTURA COM TRAVA NA FILEIRA 1 ---
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
     
     posicoes_possiveis = []
     for f in range(1, 15):
-        # REGRA: Se for Fileira 1, altura máxima é 2. Senão, é a altura configurada.
-        altura_desta_fileira = min(2, altura_max) if f == 1 else altura_max
+        # Altura Maxima 2 na Fileira 1
+        limite_altura = 2 if f == 1 else altura_max
         
-        for n in range(1, altura_desta_fileira + 1):
+        for n in range(1, limite_altura + 1):
             posicoes_possiveis.append((f, n))
             
-    # Aplica a CAPACIDADE
-    posicoes_validas = posicoes_possiveis[:capacidade]
+    posicoes_ativas = posicoes_possiveis[:capacidade]
 
     for f in range(1, 15):
-        # Define o limite físico desta fileira específica para o loop visual
-        altura_fisica_desta_fileira = min(2, altura_max) if f == 1 else altura_max
-
         for n in range(1, 4): 
             status = "Vazio"
             id_p = "--"
             
-            # 1. Verifica se existe fisicamente (Ex: F1 N3 não existe nunca)
-            if n <= altura_fisica_desta_fileira:
-                # 2. Verifica se está dentro da capacidade comprada
-                if (f, n) in posicoes_validas:
-                    idx_num = posicoes_validas.index((f, n)) + 1
-                    id_p = f"{idx_num:02d}"
-                else:
-                    status = "BLOQUEADO"
+            if (f, n) in posicoes_ativas:
+                idx_num = posicoes_ativas.index((f, n)) + 1
+                id_p = f"{idx_num:02d}"
             else:
                 status = "BLOQUEADO"
             
@@ -222,10 +212,9 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
-            # Ordena Numericamente para preencher 1, 2, 3...
-            vagas = df_atual[df_atual['Status'] == 'Vazio'].copy()
-            vagas['ID_NUM'] = pd.to_numeric(vagas['ID'], errors='coerce')
-            vagas = vagas.sort_values(by='ID_NUM')
+            # ENTRADA: Ordena por Nivel CRESCENTE (1 -> 3)
+            # Enche o chão primeiro
+            vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[True, True])
             
             agora = datetime.now().strftime("%d/%m %H:%M")
             for i in range(int(qtd_in)):
@@ -245,9 +234,9 @@ with tab_res:
     if st.button("🟠 Reservar"):
         if not cli_res: st.warning("Digite o cliente")
         else:
-            disp = df_atual[df_atual['Status'] == 'Disponível'].copy()
-            disp['ID_NUM'] = pd.to_numeric(disp['ID'], errors='coerce')
-            disp = disp.sort_values(by='ID_NUM') 
+            # RESERVA: Ordena por Nivel DECRESCENTE (3 -> 1)
+            # Reserva os do topo primeiro (próximos da saída)
+            disp = df_atual[df_atual['Status'] == 'Disponível'].sort_values(by=['Fileira', 'Nivel'], ascending=[True, False])
             
             for i in range(int(qtd_res_in)):
                 idx = disp.index[i]
@@ -278,9 +267,9 @@ with tab_sai:
         if limite_saida > 0:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
             
-            alvos = df_atual[df_atual['Status'].isin(filtro)].copy()
-            alvos['ID_NUM'] = pd.to_numeric(alvos['ID'], errors='coerce')
-            alvos = alvos.sort_values(by='ID_NUM')
+            # SAÍDA: Ordena por Nivel DECRESCENTE (3 -> 1)
+            # Tira do topo primeiro. ID 01 (chão) fica por último.
+            alvos = df_atual[df_atual['Status'].isin(filtro)].sort_values(by=['Fileira', 'Nivel'], ascending=[True, False])
             
             if len(alvos) >= qtd_out:
                 for i in range(int(qtd_out)):
@@ -295,7 +284,6 @@ st.subheader("🗺️ Mapa Visual")
 df_mapa = df_atual.copy()
 if not df_mapa.empty:
     df_mapa['ID'] = df_mapa['ID'].astype(str)
-    # Inicializa visual com o Status. Reservado já entra aqui.
     df_mapa['Visual'] = df_mapa['Status'] 
     df_mapa['Aura_FEFO'] = False
     hoje = date.today()
@@ -307,12 +295,11 @@ if not df_mapa.empty:
     for idx, row in df_ordem.iterrows():
         if row['Status'] in ["Disponível", "Reservado"]:
             
-            # Aura Validade
             if row['Validade'] and (row['Validade'] - hoje).days <= 180: 
                 df_mapa.at[idx, 'Aura_FEFO'] = True
             
-            # Troca de Lote (Azul) - SÓ APLICA SE NÃO FOR RESERVADO
             if lote_ant is not None and row['Lote'] != lote_ant: 
+                # Laranja tem prioridade. Só pinta de azul se não for reservado.
                 if row['Status'] != 'Reservado':
                     df_mapa.at[idx, 'Visual'] = 'TROCA'
             
@@ -331,10 +318,9 @@ if not df_mapa.empty:
                 fefo = mapa_fefo.loc[r, c]
                 borda = "border: 4px solid #FFFF00; box-shadow: inset 0 0 10px #FFFF00;" if fefo else "border: 1px solid #dee2e6;"
                 
-                # Cores
-                if v == "Reservado": color = 'background-color: #fd7e14; color: white;' # Laranja (Ganhou)
-                elif v == "TROCA": color = 'background-color: #007bff; color: white;'   # Azul
-                elif v == "Disponível": color = 'background-color: #28a745; color: white;' # Verde
+                if v == "Reservado": color = 'background-color: #fd7e14; color: white;' 
+                elif v == "TROCA": color = 'background-color: #007bff; color: white;' 
+                elif v == "Disponível": color = 'background-color: #28a745; color: white;' 
                 elif v == "Vazio": color = 'background-color: #e9ecef; color: #333;' 
                 else: color = 'background-color: transparent; color: transparent; border: none;' 
                 
