@@ -204,6 +204,7 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
+            # CORREÇÃO: Ordena numérica (Fileira desc, Nivel asc) para preencher de baixo pra cima, fundo pra frente
             vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[False, True])
             agora = datetime.now().strftime("%d/%m %H:%M")
             for i in range(int(qtd_in)):
@@ -223,7 +224,11 @@ with tab_res:
     if st.button("🟠 Reservar"):
         if not cli_res: st.warning("Digite o cliente")
         else:
-            disp = df_atual[df_atual['Status'] == 'Disponível'].sort_values(by='ID')
+            # CORREÇÃO: Cria coluna temporária numérica para ordenar ID correto (1, 2, 10) e não (1, 10, 2)
+            disp = df_atual[df_atual['Status'] == 'Disponível'].copy()
+            disp['ID_NUM'] = pd.to_numeric(disp['ID'], errors='coerce')
+            disp = disp.sort_values(by='ID_NUM')
+            
             for i in range(int(qtd_res_in)):
                 idx = disp.index[i]
                 st.session_state.estoque.at[idx, 'Status'] = 'Reservado'
@@ -252,7 +257,11 @@ with tab_sai:
     if st.button("⚪ Confirmar Saída"):
         if limite_saida > 0:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
-            alvos = df_atual[df_atual['Status'].isin(filtro)].sort_values(by='ID')
+            
+            # CORREÇÃO: Cria coluna temporária numérica para saída sequencial correta
+            alvos = df_atual[df_atual['Status'].isin(filtro)].copy()
+            alvos['ID_NUM'] = pd.to_numeric(alvos['ID'], errors='coerce')
+            alvos = alvos.sort_values(by='ID_NUM')
             
             if len(alvos) >= qtd_out:
                 for i in range(int(qtd_out)):
@@ -271,24 +280,19 @@ if not df_mapa.empty:
     df_mapa['Aura_FEFO'] = False
     hoje = date.today()
 
-    df_ordem = df_mapa[df_mapa['ID'] != '--'].sort_values(by='ID')
+    # Ordenação Numérica para o Loop de Cores
+    df_mapa['ID_NUM'] = pd.to_numeric(df_mapa['ID'], errors='coerce')
+    df_ordem = df_mapa[df_mapa['ID'] != '--'].sort_values(by='ID_NUM')
     
-    # --- CORREÇÃO DO ERRO AZUL ---
     lote_ant = None
     for idx, row in df_ordem.iterrows():
-        # Só analisa troca de lote se NÃO for Vazio ou Bloqueado
         if row['Status'] in ["Disponível", "Reservado"]:
-            
-            # Checa validade para aura amarela
             if row['Validade'] and (row['Validade'] - hoje).days <= 180: 
                 df_mapa.at[idx, 'Aura_FEFO'] = True
             
-            # Checa Troca de Lote (Azul)
-            # Se o lote anterior existir E for diferente do atual -> Pinta
             if lote_ant is not None and row['Lote'] != lote_ant: 
                 df_mapa.at[idx, 'Visual'] = 'TROCA'
             
-            # Atualiza o lote anterior para o atual (ignora os vazios no meio)
             lote_ant = row['Lote']
 
     df_mapa['Texto'] = df_mapa.apply(lambda r: f"P:{r['ID']}\n{str(r['Lote'])}\n{str(r['Cliente'])[:8]}" if r['Status'] not in ["Vazio", "BLOQUEADO"] else f"P:{r['ID']}" if r['Status'] == "Vazio" else "---", axis=1)
@@ -319,8 +323,8 @@ if not df_mapa.empty:
 st.divider()
 st.subheader("📋 Relatório")
 if not df_mapa.empty:
-    df_mapa['ID'] = df_mapa['ID'].astype(str)
-    df_conf = df_mapa[df_mapa['Status'] != "Vazio"].sort_values(by='ID').copy()
+    df_mapa['ID_NUM'] = pd.to_numeric(df_mapa['ID'], errors='coerce')
+    df_conf = df_mapa[df_mapa['Status'] != "Vazio"].sort_values(by='ID_NUM').copy()
     if not df_conf.empty:
         df_conf['Status FEFO'] = df_conf['Aura_FEFO'].apply(lambda x: "⚠️ VENCENDO" if x else "✅ OK")
         st.dataframe(
