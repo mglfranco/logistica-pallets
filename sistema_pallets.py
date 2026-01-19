@@ -36,7 +36,6 @@ st.markdown("""
 
 # --- FUNÇÃO MÁGICA DE SALVAR (AUTOSAVE) ---
 def salvar_dados():
-    """Esta função é chamada automaticamente sempre que algo muda."""
     if not GSHEETS_DISPONIVEL: return
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
@@ -63,8 +62,10 @@ def carregar_dados():
         df_e = conn.read(worksheet="Estoque")
         if df_e is not None and not df_e.empty:
             df_e['Validade'] = pd.to_datetime(df_e['Validade']).dt.date
-            df_e['Lote'] = df_e['Lote'].fillna("")
-            df_e['Cliente'] = df_e['Cliente'].fillna("")
+            # BLINDAGEM: Garante que ID seja lido como string para não dar erro no sort
+            df_e['ID'] = df_e['ID'].astype(str)
+            df_e['Lote'] = df_e['Lote'].fillna("").astype(str)
+            df_e['Cliente'] = df_e['Cliente'].fillna("").astype(str)
             st.session_state.estoque = df_e
             
         df_c = conn.read(worksheet="Config_Ruas")
@@ -161,7 +162,11 @@ st.title(f"🚜 Gestão Logística: {rua_sel}")
 # Busca Rápida
 busca = st.text_input("🔍 Buscar:", placeholder="Lote ou Cliente...")
 if busca:
-    res = st.session_state.estoque[st.session_state.estoque['Lote'].astype(str).str.contains(busca, case=False) | st.session_state.estoque['Cliente'].astype(str).str.contains(busca, case=False)]
+    # Garante que Lote e Cliente sejam string antes da busca
+    res = st.session_state.estoque[
+        st.session_state.estoque['Lote'].astype(str).str.contains(busca, case=False) | 
+        st.session_state.estoque['Cliente'].astype(str).str.contains(busca, case=False)
+    ]
     if not res.empty:
         st.success(f"Encontrado em: {', '.join(res['Rua'].unique())}")
         st.dataframe(res[['Rua', 'ID', 'Lote', 'Cliente']], hide_index=True)
@@ -202,7 +207,7 @@ with tab_ent:
             agora = datetime.now().strftime("%d/%m %H:%M")
             for i in range(int(qtd_in)):
                 idx = vagas.index[i]
-                st.session_state.estoque.at[idx, 'Lote'] = lote_in
+                st.session_state.estoque.at[idx, 'Lote'] = str(lote_in)
                 st.session_state.estoque.at[idx, 'Validade'] = val_in
                 st.session_state.estoque.at[idx, 'Status'] = 'Disponível'
                 st.session_state.estoque.at[idx, 'Data_Entrada'] = agora
@@ -221,7 +226,7 @@ with tab_res:
             for i in range(int(qtd_res_in)):
                 idx = disp.index[i]
                 st.session_state.estoque.at[idx, 'Status'] = 'Reservado'
-                st.session_state.estoque.at[idx, 'Cliente'] = cli_res.upper()
+                st.session_state.estoque.at[idx, 'Cliente'] = str(cli_res).upper()
             salvar_dados()
             st.rerun()
 
@@ -230,17 +235,14 @@ with tab_sai:
     with c2: 
         modo = st.radio("Regra:", ["Somente Reservados", "Saída Direta"], horizontal=True)
     
-    # LÓGICA DE LIMITE INTELIGENTE
     if modo == "Somente Reservados":
         limite_saida = qtd_res
         msg_aviso = "Não há pallets reservados para retirar."
     else:
-        # Saída Direta pega Disponíveis + Reservados (Tudo que não é vazio)
         limite_saida = qtd_disp + qtd_res
         msg_aviso = "A rua está vazia, nada para retirar."
     
     with c1: 
-        # Aqui o limite máximo do input se adapta ao que realmente existe
         if limite_saida > 0:
             qtd_out = st.number_input("🔢 Retirar", 1, limite_saida, value=1)
         else:
@@ -254,7 +256,6 @@ with tab_sai:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
             alvos = df_atual[df_atual['Status'].isin(filtro)].sort_values(by='ID')
             
-            # Dupla checagem de segurança
             if len(alvos) < qtd_out: 
                 st.error("Erro de contagem. Tente recarregar a página.")
             else:
@@ -269,6 +270,10 @@ st.divider()
 st.subheader("🗺️ Mapa Visual")
 df_mapa = df_atual.copy()
 if not df_mapa.empty:
+    # --- CORREÇÃO DO ERRO ---
+    # Converte ID para texto para evitar que o sort_values trave com mistura de numero/texto
+    df_mapa['ID'] = df_mapa['ID'].astype(str)
+    
     df_mapa['Visual'] = df_mapa['Status']
     df_mapa['Aura_FEFO'] = False
     hoje = date.today()
@@ -309,7 +314,10 @@ if not df_mapa.empty:
 st.divider()
 st.subheader("📋 Relatório")
 if not df_mapa.empty:
+    # --- CORREÇÃO DO ERRO TAMBÉM AQUI ---
+    df_mapa['ID'] = df_mapa['ID'].astype(str) 
     df_conf = df_mapa[df_mapa['Status'] != "Vazio"].sort_values(by='ID').copy()
+    
     if not df_conf.empty:
         df_conf['Status FEFO'] = df_conf['Aura_FEFO'].apply(lambda x: "⚠️ VENCENDO" if x else "✅ OK")
         st.dataframe(
