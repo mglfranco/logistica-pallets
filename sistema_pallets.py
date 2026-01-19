@@ -96,13 +96,13 @@ if 'estoque' not in st.session_state:
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
     
-    # Gera posições fisicamente (F1 N1, F1 N2... F2 N1...)
+    # Gera todas as posições possíveis na ordem padrão
     posicoes_possiveis = []
     for f in range(1, 15):
         for n in range(1, altura_max + 1):
             posicoes_possiveis.append((f, n))
             
-    # Aplica capacidade cortando o final (IDs mais altos)
+    # Aplica a capacidade (corta o final se diminuir)
     posicoes_validas = posicoes_possiveis[:capacidade]
 
     for f in range(1, 15):
@@ -112,7 +112,6 @@ def inicializar_rua(nome_rua, capacidade, altura_max):
             
             if n <= altura_max:
                 if (f, n) in posicoes_validas:
-                    # ID sequencial começa em 1 na Fileira 1
                     idx_num = posicoes_validas.index((f, n)) + 1
                     id_p = f"{idx_num:02d}"
                 else:
@@ -215,8 +214,8 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
-            # CORREÇÃO: Fileira ASCENDENTE (True) para preencher do começo (1) para o fim
-            vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[True, True])
+            # RESTAURADO: Fileira DESCENDENTE (False) -> Preenche do Fundo para a Frente
+            vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[False, True])
             agora = datetime.now().strftime("%d/%m %H:%M")
             for i in range(int(qtd_in)):
                 idx = vagas.index[i]
@@ -237,7 +236,7 @@ with tab_res:
         else:
             disp = df_atual[df_atual['Status'] == 'Disponível'].copy()
             disp['ID_NUM'] = pd.to_numeric(disp['ID'], errors='coerce')
-            disp = disp.sort_values(by='ID_NUM') # Reserva sequencial 1, 2, 3...
+            disp = disp.sort_values(by='ID_NUM') # Reserva pelo ID (1, 2, 3...)
             
             for i in range(int(qtd_res_in)):
                 idx = disp.index[i]
@@ -270,7 +269,7 @@ with tab_sai:
             
             alvos = df_atual[df_atual['Status'].isin(filtro)].copy()
             alvos['ID_NUM'] = pd.to_numeric(alvos['ID'], errors='coerce')
-            alvos = alvos.sort_values(by='ID_NUM') # Retira sequencial 1, 2, 3...
+            alvos = alvos.sort_values(by='ID_NUM') # Retira pelo ID (1, 2, 3...)
             
             if len(alvos) >= qtd_out:
                 for i in range(int(qtd_out)):
@@ -279,7 +278,7 @@ with tab_sai:
                 salvar_dados()
                 st.rerun()
 
-# --- MAPA VISUAL (INVERTIDO) ---
+# --- MAPA VISUAL (RESTAURADO) ---
 st.divider()
 st.subheader("🗺️ Mapa Visual")
 df_mapa = df_atual.copy()
@@ -323,8 +322,8 @@ if not df_mapa.empty:
                 style_df.loc[r, c] = f'{color} {borda} font-size: 10px; font-weight: bold; text-align: center; height: 85px; min-width: 105px; white-space: pre-wrap; border-radius: 8px;'
         return style_df
 
-    # CORREÇÃO VISUAL: Fileira 1 na Esquerda (Ascendente)
-    st.table(mapa_t[sorted(mapa_t.columns)].sort_index(ascending=False).style.apply(style_fn, axis=None))
+    # RESTAURADO: reverse=True (Fileira maior na Esquerda, Fileira 1 na Direita)
+    st.table(mapa_t[sorted(mapa_t.columns, reverse=True)].sort_index(ascending=False).style.apply(style_fn, axis=None))
 
 # --- TABELA DETALHADA ---
 st.divider()
