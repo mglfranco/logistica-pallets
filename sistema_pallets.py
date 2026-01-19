@@ -35,7 +35,6 @@ st.markdown("""
 
 # --- FUNÇÕES DE BANCO DE DADOS ---
 def salvar_dados():
-    """Salva e limpa o cache."""
     if not GSHEETS_DISPONIVEL: return
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
@@ -53,14 +52,11 @@ def salvar_dados():
             conn.update(worksheet="Config_Global", data=df_g)
             
             st.cache_data.clear()
-        
         st.toast("Salvo na nuvem!", icon="✅")
-        
     except Exception as e:
         st.error(f"Erro ao Salvar: {e}")
 
 def carregar_dados():
-    """Lê os dados com ttl=0."""
     if not GSHEETS_DISPONIVEL: return
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
@@ -97,41 +93,31 @@ if 'estoque' not in st.session_state:
     st.session_state.cap_total_galpao = 2000
     carregar_dados() 
 
-# --- NOVA LÓGICA DE ESTRUTURA DA RUA ---
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
     
-    # 1. Gera TODAS as posições possíveis baseadas na altura (Sem cortar nada no começo)
+    # Gera posições fisicamente (F1 N1, F1 N2... F2 N1...)
     posicoes_possiveis = []
-    
-    # Preenche Fileira por Fileira (F1 inteira, depois F2 inteira...)
-    # Dentro da fileira, preenche do Chão (1) ao Teto (altura_max)
     for f in range(1, 15):
         for n in range(1, altura_max + 1):
             posicoes_possiveis.append((f, n))
             
-    # 2. Define quais posições recebem ID baseado na CAPACIDADE
-    # Isso garante que ID 01 seja sempre o primeiro slot, ID 41 seja o último.
-    # Se reduzir a capacidade, ele corta do fim da lista (os IDs maiores).
+    # Aplica capacidade cortando o final (IDs mais altos)
     posicoes_validas = posicoes_possiveis[:capacidade]
 
-    # 3. Monta o DataFrame para o Mapa
     for f in range(1, 15):
-        for n in range(1, 4): # Loop fixo visual de 3 andares (padrão visual)
+        for n in range(1, 4): 
             status = "Vazio"
             id_p = "--"
             
-            # Só processa se o nível for fisicamente possível na altura configurada
             if n <= altura_max:
                 if (f, n) in posicoes_validas:
-                    # Calcula o ID sequencial (1, 2, 3...)
+                    # ID sequencial começa em 1 na Fileira 1
                     idx_num = posicoes_validas.index((f, n)) + 1
                     id_p = f"{idx_num:02d}"
                 else:
-                    # Se existe fisicamente (nível <= altura) mas passou da capacidade -> BLOQUEADO
                     status = "BLOQUEADO"
             else:
-                # Se o nível for maior que a altura da rua (ex: Nível 3 numa rua de altura 2) -> BLOQUEADO
                 status = "BLOQUEADO"
             
             dados.append({
@@ -140,13 +126,10 @@ def inicializar_rua(nome_rua, capacidade, altura_max):
             })
     
     df_nova = pd.DataFrame(dados)
-    
-    # Atualiza o Estoque Global
     if st.session_state.estoque.empty:
         st.session_state.estoque = df_nova
     else:
         st.session_state.estoque = pd.concat([st.session_state.estoque[st.session_state.estoque['Rua'] != nome_rua], df_nova])
-    
     st.session_state.config_ruas[nome_rua] = {'cap': capacidade, 'alt': altura_max}
     salvar_dados()
 
@@ -175,11 +158,9 @@ with st.sidebar:
     st.divider()
     st.header("🏢 Galpão Global")
     st.session_state.cap_total_galpao = st.number_input(
-        "Capacidade Total do Galpão", 
-        min_value=1, 
-        max_value=100000, 
-        value=int(st.session_state.cap_total_galpao),
-        step=50,
+        "Capacidade Total", 
+        min_value=1, max_value=100000, 
+        value=int(st.session_state.cap_total_galpao), step=50,
         on_change=salvar_dados
     )
     
@@ -191,7 +172,7 @@ with st.sidebar:
 st.title(f"🚜 Gestão: {rua_sel}")
 
 # Busca
-busca = st.text_input("🔍 Buscar Lote/Cliente:", placeholder="Digite...")
+busca = st.text_input("🔍 Buscar:", placeholder="Lote ou Cliente...")
 if busca:
     res = st.session_state.estoque[
         st.session_state.estoque['Lote'].astype(str).str.contains(busca, case=False) | 
@@ -218,7 +199,7 @@ c4.metric("Reservados", qtd_res)
 ocupados_global = len(st.session_state.estoque[st.session_state.estoque['Status'].isin(['Disponível', 'Reservado'])]) if not st.session_state.estoque.empty else 0
 perc = (ocupados_global / st.session_state.cap_total_galpao) * 100
 st.progress(min(perc/100, 1.0))
-st.caption(f"Ocupação Global do Galpão: {perc:.1f}% ({ocupados_global} de {st.session_state.cap_total_galpao})")
+st.caption(f"Ocupação Global: {perc:.1f}%")
 
 st.divider()
 
@@ -234,8 +215,8 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
-            # Ordena: Fileira (Desc) e Nivel (Asc) -> Preenche fundo e sobe
-            vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[False, True])
+            # CORREÇÃO: Fileira ASCENDENTE (True) para preencher do começo (1) para o fim
+            vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[True, True])
             agora = datetime.now().strftime("%d/%m %H:%M")
             for i in range(int(qtd_in)):
                 idx = vagas.index[i]
@@ -256,7 +237,7 @@ with tab_res:
         else:
             disp = df_atual[df_atual['Status'] == 'Disponível'].copy()
             disp['ID_NUM'] = pd.to_numeric(disp['ID'], errors='coerce')
-            disp = disp.sort_values(by='ID_NUM')
+            disp = disp.sort_values(by='ID_NUM') # Reserva sequencial 1, 2, 3...
             
             for i in range(int(qtd_res_in)):
                 idx = disp.index[i]
@@ -286,9 +267,10 @@ with tab_sai:
     if st.button("⚪ Confirmar Saída"):
         if limite_saida > 0:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
+            
             alvos = df_atual[df_atual['Status'].isin(filtro)].copy()
             alvos['ID_NUM'] = pd.to_numeric(alvos['ID'], errors='coerce')
-            alvos = alvos.sort_values(by='ID_NUM')
+            alvos = alvos.sort_values(by='ID_NUM') # Retira sequencial 1, 2, 3...
             
             if len(alvos) >= qtd_out:
                 for i in range(int(qtd_out)):
@@ -297,7 +279,7 @@ with tab_sai:
                 salvar_dados()
                 st.rerun()
 
-# --- MAPA VISUAL ---
+# --- MAPA VISUAL (INVERTIDO) ---
 st.divider()
 st.subheader("🗺️ Mapa Visual")
 df_mapa = df_atual.copy()
@@ -333,17 +315,16 @@ if not df_mapa.empty:
                 v = mapa_v.loc[r, c]
                 fefo = mapa_fefo.loc[r, c]
                 borda = "border: 4px solid #FFFF00; box-shadow: inset 0 0 10px #FFFF00;" if fefo else "border: 1px solid #dee2e6;"
-                
                 if v == "TROCA": color = 'background-color: #007bff; color: white;' 
                 elif v == "Disponível": color = 'background-color: #28a745; color: white;' 
                 elif v == "Reservado": color = 'background-color: #fd7e14; color: white;' 
                 elif v == "Vazio": color = 'background-color: #e9ecef; color: #333;' 
                 else: color = 'background-color: transparent; color: transparent; border: none;' 
-                
                 style_df.loc[r, c] = f'{color} {borda} font-size: 10px; font-weight: bold; text-align: center; height: 85px; min-width: 105px; white-space: pre-wrap; border-radius: 8px;'
         return style_df
 
-    st.table(mapa_t[sorted(mapa_t.columns, reverse=True)].sort_index(ascending=False).style.apply(style_fn, axis=None))
+    # CORREÇÃO VISUAL: Fileira 1 na Esquerda (Ascendente)
+    st.table(mapa_t[sorted(mapa_t.columns)].sort_index(ascending=False).style.apply(style_fn, axis=None))
 
 # --- TABELA DETALHADA ---
 st.divider()
