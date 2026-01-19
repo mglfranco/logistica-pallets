@@ -3,14 +3,34 @@ import pandas as pd
 from io import BytesIO
 from datetime import datetime
 import string
+import os
 
-# --- CONFIGURAÇÃO ---
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Logística Master - Controle de ruas/estoque")
 
-# --- INICIALIZAÇÃO DO BANCO DE DADOS ---
+# --- FUNÇÃO PARA SALVAR/CARREGAR DADOS (PERSISTÊNCIA) ---
+DB_FILE = "banco_dados_estoque.csv"
+CONFIG_FILE = "config_ruas.csv"
+
+def salvar_dados():
+    st.session_state.estoque.to_csv(DB_FILE, index=False)
+    # Salva as configurações de capacidade das ruas
+    pd.DataFrame(list(st.session_state.config_ruas.items()), columns=['Rua', 'Capacidade']).to_csv(CONFIG_FILE, index=False)
+
+def carregar_dados():
+    if os.path.exists(DB_FILE):
+        st.session_state.estoque = pd.read_csv(DB_FILE)
+        # Converte validade de string para data novamente
+        st.session_state.estoque['Validade'] = pd.to_datetime(st.session_state.estoque['Validade']).dt.date
+    if os.path.exists(CONFIG_FILE):
+        df_cfg = pd.read_csv(CONFIG_FILE)
+        st.session_state.config_ruas = dict(zip(df_cfg.Rua, df_cfg.Capacidade))
+
+# --- INICIALIZAÇÃO DO ESTADO ---
 if 'estoque' not in st.session_state:
     st.session_state.estoque = pd.DataFrame()
-    st.session_state.config_ruas = {} 
+    st.session_state.config_ruas = {}
+    carregar_dados()
 
 def inicializar_rua(nome_rua, capacidade):
     dados = []
@@ -44,15 +64,35 @@ def inicializar_rua(nome_rua, capacidade):
     else:
         st.session_state.estoque = pd.concat([st.session_state.estoque[st.session_state.estoque['Rua'] != nome_rua], novo_df])
     st.session_state.config_ruas[nome_rua] = capacidade
+    salvar_dados()
 
 # Gerar lista A-Z
 lista_ruas_opcoes = []
 for letra in string.ascii_uppercase:
     lista_ruas_opcoes.extend([f"Rua {letra}1", f"Rua {letra}2"])
 
-# --- INTERFACE ---
+# --- INTERFACE PRINCIPAL ---
 st.title("🚜 Controle Logístico - Gestão de Ruas 🚜")
 
+# --- PAINEL ESTRATÉGICO (DASHBOARD) ---
+if not st.session_state.estoque.empty:
+    st.divider()
+    st.subheader("📊 Painel Estratégico do Armazém")
+    col_m1, col_m2, col_m3 = st.columns(3)
+
+    # Cálculo para todas as ruas
+    total_pallets_global = len(st.session_state.estoque[st.session_state.estoque['Status'] != 'BLOQUEADO'])
+    ocupados_global = len(st.session_state.estoque[st.session_state.estoque['Status'].isin(['Disponível', 'Reservado'])])
+    percentual = (ocupados_global / total_pallets_global) * 100 if total_pallets_global > 0 else 0
+
+    col_m1.metric("Capacidade Total", f"{total_pallets_global} Pallets")
+    col_m2.metric("Ocupação Geral", f"{ocupados_global} Unid.")
+    with col_m3:
+        st.write(f"**Progresso de Ocupação: {percentual:.1f}%**")
+        st.progress(percentual / 100)
+    st.divider()
+
+# --- SIDEBAR E OPERAÇÕES ---
 with st.sidebar:
     st.header("⚙️ Configurações")
     rua_sel = st.selectbox("Selecione a Rua", lista_ruas_opcoes)
@@ -61,14 +101,14 @@ with st.sidebar:
         inicializar_rua(rua_sel, 41)
 
     with st.expander("📏 Ajustar Tamanho da Rua"):
-        nova_cap = st.number_input(f"Capacidade da {rua_sel}", 1, 41, st.session_state.config_ruas[rua_sel])
+        nova_cap = st.number_input(f"Capacidade da {rua_sel}", 1, 41, int(st.session_state.config_ruas[rua_sel]))
         if st.button("💾 Aplicar Nova Capacidade"):
             inicializar_rua(rua_sel, nova_cap)
             st.rerun()
 
     st.divider()
     
-    # Métricas
+    # Métricas da Rua Selecionada
     df_atual = st.session_state.estoque[st.session_state.estoque['Rua'] == rua_sel]
     cap_max = st.session_state.config_ruas[rua_sel]
     qtd_disp = len(df_atual[df_atual['Status'] == 'Disponível'])
@@ -91,7 +131,11 @@ with st.sidebar:
             agora = datetime.now().strftime("%d/%m/%Y %H:%M")
             for i in range(min(int(qtd_in), len(vagas))):
                 idx = vagas.index[i]
-                st.session_state.estoque.at[idx, 'Lote'], st.session_state.estoque.at[idx, 'Validade'], st.session_state.estoque.at[idx, 'Status'], st.session_state.estoque.at[idx, 'Data_Entrada'] = lote_in, val_in, 'Disponível', agora
+                st.session_state.estoque.at[idx, 'Lote'] = lote_in
+                st.session_state.estoque.at[idx, 'Validade'] = val_in
+                st.session_state.estoque.at[idx, 'Status'] = 'Disponível'
+                st.session_state.estoque.at[idx, 'Data_Entrada'] = agora
+            salvar_dados()
             st.rerun()
 
     with tab2:
@@ -104,11 +148,13 @@ with st.sidebar:
                 disp = st.session_state.estoque[(st.session_state.estoque['Rua'] == rua_sel) & (st.session_state.estoque['Status'] == 'Disponível')].sort_values(by='ID')
                 for i in range(min(int(qtd_res_in), len(disp))):
                     idx = disp.index[i]
-                    st.session_state.estoque.at[idx, 'Status'], st.session_state.estoque.at[idx, 'Cliente'] = 'Reservado', cliente_res.upper()
+                    st.session_state.estoque.at[idx, 'Status'] = 'Reservado'
+                    st.session_state.estoque.at[idx, 'Cliente'] = cliente_res.upper()
+                salvar_dados()
                 st.rerun()
 
     with tab3:
-        qtd_out = st.number_input("Qtd Retirar", 1, cap_max)
+        qtd_out = st.number_input("Qtd Retirar", 1, int(cap_max))
         modo_saida = st.radio("Regra de Saída:", ["Somente Reservados", "Saída Direta (Ajuste)"])
         if st.button("⚪ Confirmar Saída"):
             filtro = ['Reservado'] if modo_saida == "Somente Reservados" else ['Disponível', 'Reservado']
@@ -120,9 +166,10 @@ with st.sidebar:
                 for i in range(min(int(qtd_out), len(alvos))):
                     idx = alvos.index[i]
                     st.session_state.estoque.loc[idx, ['Lote', 'Status', 'Validade', 'Cliente', 'Data_Entrada']] = ["", "Vazio", None, "", None]
+                salvar_dados()
                 st.rerun()
 
-# --- LÓGICA DO MAPA E COR AZUL ---
+# --- LÓGICA DO MAPA ---
 df_mapa = st.session_state.estoque[st.session_state.estoque['Rua'] == rua_sel].copy()
 df_mapa['Visual'] = df_mapa['Status']
 df_ordem = df_mapa[df_mapa['ID'] != '--'].sort_values(by='ID')
@@ -157,18 +204,3 @@ st.table(mapa_t[sorted(mapa_t.columns, reverse=True)].sort_index(ascending=False
 st.subheader("📋 Detalhamento de Conferência")
 df_conf = df_mapa[df_mapa['Status'] != "Vazio"].sort_values(by='ID')[['ID', 'Lote', 'Validade', 'Status', 'Cliente', 'Data_Entrada']]
 st.dataframe(df_conf, use_container_width=True, hide_index=True)
-
-# Adicione isso logo após o título do projeto
-st.divider()
-st.subheader("📊 Painel Estratégico do Armazém")
-col_m1, col_m2, col_m3 = st.columns(3)
-
-# Cálculo para todas as ruas
-total_pallets_global = len(st.session_state.estoque[st.session_state.estoque['Status'] != 'BLOQUEADO'])
-ocupados_global = len(st.session_state.estoque[st.session_state.estoque['Status'].isin(['Disponível', 'Reservado'])])
-percentual = (ocupados_global / total_pallets_global) * 100 if total_pallets_global > 0 else 0
-
-col_m1.metric("Capacidade Total", f"{total_pallets_global} Pallets")
-col_m2.metric("Ocupação Geral", f"{ocupados_global} Unid.")
-col_m3.progress(percentual / 100)
-st.write(f"O armazém está com **{percentual:.1f}%** de ocupação.")
