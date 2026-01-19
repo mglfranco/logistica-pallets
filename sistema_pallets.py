@@ -93,44 +93,49 @@ if 'estoque' not in st.session_state:
     st.session_state.cap_total_galpao = 2000
     carregar_dados() 
 
-# --- LÓGICA DE NUMERAÇÃO DE CIMA PARA BAIXO ---
+# --- LÓGICA DE GRAVIDADE (PREENCHE DO CHÃO, NUMERA DO TOPO) ---
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
-    
-    # 1. Gera a Lista de IDs na Ordem Desejada (F1 Topo -> F1 Chão -> F2 Topo -> F2 Chão...)
-    ordem_ids = []
+    id_counter = 1 # Começa a contar os IDs (01, 02...)
     
     for f in range(1, 15):
-        # Define altura da fileira (F1 trava em 2)
-        limite_altura = 2 if f == 1 else altura_max
+        # 1. Define Altura Física desta Fileira (F1 trava em 2, o resto segue config)
+        altura_desta_fileira = 2 if f == 1 else altura_max
         
-        # Loop Reverso: Do Nível Mais Alto para o 1
-        for n in range(limite_altura, 0, -1):
-            ordem_ids.append((f, n))
+        # 2. Calcula quantos pallets vão nesta fileira específica
+        # Ex: Se faltam 40 e cabe 3 -> Põe 3.
+        # Ex: Se faltam 2 e cabe 3 -> Põe 2 (Aqui está o segredo!)
+        pallets_restantes = capacidade - (id_counter - 1)
+        pallets_nesta_fileira = min(altura_desta_fileira, max(0, pallets_restantes))
+        
+        # 3. Mapeia quais níveis serão ocupados
+        # Se são 2 pallets, ocupam Nivel 1 e 2 (Chão pra cima)
+        niveis_fisicos = list(range(1, pallets_nesta_fileira + 1))
+        
+        # 4. Atribui IDs (Ordem de Retirada: Do mais alto para o mais baixo)
+        # Invertemos a lista de níveis para dar o ID menor ao Nivel maior
+        niveis_ordenados_para_id = sorted(niveis_fisicos, reverse=True)
+        
+        mapa_ids = {} # Dicionário {Nivel: ID}
+        for n in niveis_ordenados_para_id:
+            mapa_ids[n] = f"{id_counter:02d}"
+            id_counter += 1
             
-    # 2. Aplica a Capacidade
-    # Se capacidade 41, pega os primeiros 41 itens da lista acima (F1N2, F1N1, F2N3...)
-    posicoes_ativas = ordem_ids[:capacidade]
-
-    # 3. Monta o DataFrame visualizando todos os slots possíveis
-    for f in range(1, 15):
-        limite_visual = 2 if f == 1 else altura_max
-        
+        # 5. Preenche o DataFrame Visual
         for n in range(1, 4): 
             status = "Vazio"
             id_p = "--"
             
-            # Verifica existência física
-            if n <= limite_visual:
-                if (f, n) in posicoes_ativas:
-                    # O ID é a posição na lista + 1
-                    # Ex: F1 N2 é o índice 0 da lista -> ID 01
-                    # Ex: F1 N1 é o índice 1 da lista -> ID 02
-                    idx_num = posicoes_ativas.index((f, n)) + 1
-                    id_p = f"{idx_num:02d}"
+            # Existe fisicamente na estrutura?
+            if n <= altura_desta_fileira:
+                if n in mapa_ids:
+                    id_p = mapa_ids[n]
+                    status = "Vazio" # Slot criado e pronto para uso
                 else:
+                    # Existe a prateleira, mas a capacidade comprada não chegou aqui
                     status = "BLOQUEADO"
             else:
+                # Não existe a prateleira (ex: Nivel 3 na Fileira 1)
                 status = "BLOQUEADO"
             
             dados.append({
@@ -169,10 +174,10 @@ with st.sidebar:
             inicializar_rua(rua_sel, novo_cap, novo_alt)
             st.rerun()
             
-    # BOTÃO ESSENCIAL PARA APLICAR A NOVA LÓGICA
-    if st.button("♻️ REINICIAR RUA (Aplicar Padrão)", type="secondary"):
+    # BOTÃO DE REINICIALIZAÇÃO (ESSENCIAL PARA APLICAR A CORREÇÃO)
+    if st.button("♻️ REINICIAR RUA (Aplicar Correção)", type="secondary"):
         inicializar_rua(rua_sel, novo_cap, novo_alt)
-        st.toast(f"{rua_sel} reconfigurada com ID 01 no Topo!")
+        st.toast(f"{rua_sel} corrigida com gravidade correta!")
         time.sleep(1)
         st.rerun()
 
@@ -236,13 +241,7 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
-            # ENTRADA INTELIGENTE:
-            # Deve preencher do CHÃO (Nivel 1) para cima.
-            # E da Frente (Fileira 1) para o Fundo.
-            # Como ID 01 é Topo e ID 02 é Chão...
-            # O sistema deve preferir IDs MAIORES dentro da mesma fileira?
-            # Não, ele deve preferir Nivel ASCENDENTE (1, 2, 3).
-            
+            # ENTRADA: Enche do Chão (Nivel 1) para cima
             vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[True, True])
             
             agora = datetime.now().strftime("%d/%m %H:%M")
@@ -263,10 +262,7 @@ with tab_res:
     if st.button("🟠 Reservar"):
         if not cli_res: st.warning("Digite o cliente")
         else:
-            # RESERVA:
-            # Pela lógica do usuário: Começar do 01.
-            # 01 é Topo. Então ordem deve ser ID CRESCENTE (1, 2, 3...)
-            
+            # RESERVA: Começa pelo ID 01 (Crescente)
             disp = df_atual[df_atual['Status'] == 'Disponível'].copy()
             disp['ID_NUM'] = pd.to_numeric(disp['ID'], errors='coerce')
             disp = disp.sort_values(by='ID_NUM', ascending=True)
@@ -300,10 +296,7 @@ with tab_sai:
         if limite_saida > 0:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
             
-            # SAÍDA:
-            # Começar do 01 (Topo).
-            # Ordem ID CRESCENTE (1, 2, 3...)
-            
+            # SAÍDA: Começa pelo ID 01 (Crescente)
             alvos = df_atual[df_atual['Status'].isin(filtro)].copy()
             alvos['ID_NUM'] = pd.to_numeric(alvos['ID'], errors='coerce')
             alvos = alvos.sort_values(by='ID_NUM', ascending=True)
@@ -336,7 +329,6 @@ if not df_mapa.empty:
                 df_mapa.at[idx, 'Aura_FEFO'] = True
             
             if lote_ant is not None and row['Lote'] != lote_ant: 
-                # Laranja tem prioridade TOTAL
                 if row['Status'] != 'Reservado':
                     df_mapa.at[idx, 'Visual'] = 'TROCA'
             
