@@ -93,23 +93,26 @@ if 'estoque' not in st.session_state:
     st.session_state.cap_total_galpao = 2000
     carregar_dados() 
 
-# --- LÓGICA PADRÃO PARA TODAS AS RUAS ---
+# --- LÓGICA DE NUMERAÇÃO DE CIMA PARA BAIXO ---
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
     
-    # 1. Gera estrutura física
-    posicoes_possiveis = []
+    # 1. Gera a Lista de IDs na Ordem Desejada (F1 Topo -> F1 Chão -> F2 Topo -> F2 Chão...)
+    ordem_ids = []
+    
     for f in range(1, 15):
-        # REGRA UNIVERSAL: Fileira 1 tem altura máx 2. As outras seguem a config.
+        # Define altura da fileira (F1 trava em 2)
         limite_altura = 2 if f == 1 else altura_max
         
-        for n in range(1, limite_altura + 1):
-            posicoes_possiveis.append((f, n))
+        # Loop Reverso: Do Nível Mais Alto para o 1
+        for n in range(limite_altura, 0, -1):
+            ordem_ids.append((f, n))
             
-    # 2. Aplica capacidade (corta os últimos)
-    posicoes_ativas = posicoes_possiveis[:capacidade]
+    # 2. Aplica a Capacidade
+    # Se capacidade 41, pega os primeiros 41 itens da lista acima (F1N2, F1N1, F2N3...)
+    posicoes_ativas = ordem_ids[:capacidade]
 
-    # 3. Cria slots
+    # 3. Monta o DataFrame visualizando todos os slots possíveis
     for f in range(1, 15):
         limite_visual = 2 if f == 1 else altura_max
         
@@ -117,9 +120,12 @@ def inicializar_rua(nome_rua, capacidade, altura_max):
             status = "Vazio"
             id_p = "--"
             
-            # Só cria se existir fisicamente nessa regra
+            # Verifica existência física
             if n <= limite_visual:
                 if (f, n) in posicoes_ativas:
+                    # O ID é a posição na lista + 1
+                    # Ex: F1 N2 é o índice 0 da lista -> ID 01
+                    # Ex: F1 N1 é o índice 1 da lista -> ID 02
                     idx_num = posicoes_ativas.index((f, n)) + 1
                     id_p = f"{idx_num:02d}"
                 else:
@@ -134,7 +140,6 @@ def inicializar_rua(nome_rua, capacidade, altura_max):
     
     df_nova = pd.DataFrame(dados)
     
-    # Remove dados antigos dessa rua e insere os novos
     if not st.session_state.estoque.empty:
         st.session_state.estoque = st.session_state.estoque[st.session_state.estoque['Rua'] != nome_rua]
     
@@ -149,7 +154,6 @@ with st.sidebar:
     st.header("⚙️ Painel")
     rua_sel = st.selectbox("📍 Selecionar Rua", lista_ruas)
     
-    # Se a rua nunca foi visitada, cria ela agora
     if rua_sel not in st.session_state.config_ruas:
         inicializar_rua(rua_sel, 41, 3)
 
@@ -165,10 +169,10 @@ with st.sidebar:
             inicializar_rua(rua_sel, novo_cap, novo_alt)
             st.rerun()
             
-    # --- BOTÃO PARA CORRIGIR RUAS ANTIGAS ---
+    # BOTÃO ESSENCIAL PARA APLICAR A NOVA LÓGICA
     if st.button("♻️ REINICIAR RUA (Aplicar Padrão)", type="secondary"):
         inicializar_rua(rua_sel, novo_cap, novo_alt)
-        st.toast(f"{rua_sel} resetada para o padrão correto!")
+        st.toast(f"{rua_sel} reconfigurada com ID 01 no Topo!")
         time.sleep(1)
         st.rerun()
 
@@ -232,7 +236,13 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
-            # ENTRADA: Baixo para Cima (Nivel ASC), Frente para Fundo (Fileira ASC)
+            # ENTRADA INTELIGENTE:
+            # Deve preencher do CHÃO (Nivel 1) para cima.
+            # E da Frente (Fileira 1) para o Fundo.
+            # Como ID 01 é Topo e ID 02 é Chão...
+            # O sistema deve preferir IDs MAIORES dentro da mesma fileira?
+            # Não, ele deve preferir Nivel ASCENDENTE (1, 2, 3).
+            
             vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[True, True])
             
             agora = datetime.now().strftime("%d/%m %H:%M")
@@ -253,8 +263,13 @@ with tab_res:
     if st.button("🟠 Reservar"):
         if not cli_res: st.warning("Digite o cliente")
         else:
-            # RESERVA: Cima para Baixo (Nivel DESC) - Tira do topo
-            disp = df_atual[df_atual['Status'] == 'Disponível'].sort_values(by=['Fileira', 'Nivel'], ascending=[True, False])
+            # RESERVA:
+            # Pela lógica do usuário: Começar do 01.
+            # 01 é Topo. Então ordem deve ser ID CRESCENTE (1, 2, 3...)
+            
+            disp = df_atual[df_atual['Status'] == 'Disponível'].copy()
+            disp['ID_NUM'] = pd.to_numeric(disp['ID'], errors='coerce')
+            disp = disp.sort_values(by='ID_NUM', ascending=True)
             
             for i in range(int(qtd_res_in)):
                 idx = disp.index[i]
@@ -285,8 +300,13 @@ with tab_sai:
         if limite_saida > 0:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
             
-            # SAÍDA: Cima para Baixo (Nivel DESC) - Tira do topo (LIFO vertical)
-            alvos = df_atual[df_atual['Status'].isin(filtro)].sort_values(by=['Fileira', 'Nivel'], ascending=[True, False])
+            # SAÍDA:
+            # Começar do 01 (Topo).
+            # Ordem ID CRESCENTE (1, 2, 3...)
+            
+            alvos = df_atual[df_atual['Status'].isin(filtro)].copy()
+            alvos['ID_NUM'] = pd.to_numeric(alvos['ID'], errors='coerce')
+            alvos = alvos.sort_values(by='ID_NUM', ascending=True)
             
             if len(alvos) >= qtd_out:
                 for i in range(int(qtd_out)):
@@ -316,6 +336,7 @@ if not df_mapa.empty:
                 df_mapa.at[idx, 'Aura_FEFO'] = True
             
             if lote_ant is not None and row['Lote'] != lote_ant: 
+                # Laranja tem prioridade TOTAL
                 if row['Status'] != 'Reservado':
                     df_mapa.at[idx, 'Visual'] = 'TROCA'
             
