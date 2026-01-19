@@ -12,13 +12,44 @@ except ImportError:
     GSHEETS_DISPONIVEL = False
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(layout="wide", page_title="Logística Pro - Google Sheets", page_icon="🚜")
+st.set_page_config(layout="wide", page_title="Logística Pro", page_icon="🚜")
 
-# --- ESTILIZAÇÃO CSS ---
+# --- ESTILIZAÇÃO (CSS) - O SEGREDO DO DESIGN MOBILE ---
 st.markdown("""
     <style>
-    .main { background-color: #f5f7f9; }
-    .stMetric { background-color: #ffffff; border-radius: 10px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    /* Fundo geral mais limpo */
+    .main { background-color: #f8f9fa; }
+    
+    /* Cartões de métricas com sombra suave */
+    div[data-testid="stMetric"] {
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
+        border-radius: 12px;
+        padding: 15px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    }
+    
+    /* Botões: Largura total para facilitar o clique no celular */
+    div.stButton > button {
+        width: 100%;
+        border-radius: 8px;
+        height: 50px;
+        font-weight: bold;
+        border: none;
+        transition: 0.3s;
+    }
+    
+    /* Cores específicas para botões de ação */
+    div[data-testid="stButton"] button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+
+    /* Abas maiores para dedo */
+    .stTabs [data-baseweb="tab-list"] button {
+        flex: 1; /* Ocupa espaço igual */
+        font-weight: 600;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -29,7 +60,6 @@ def salvar_dados():
         conn = st.connection("gsheets", type=GSheetsConnection)
         conn.update(worksheet="Estoque", data=st.session_state.estoque)
         
-        # Salva Configurações das Ruas
         df_cfg = pd.DataFrame([
             {'Rua': k, 'Capacidade': v.get('cap', 41), 'Altura': v.get('alt', 3)} 
             for k, v in st.session_state.config_ruas.items()
@@ -39,7 +69,7 @@ def salvar_dados():
         df_g = pd.DataFrame([{"cap_galpao": st.session_state.cap_total_galpao, "cap_padrao": st.session_state.capacidade_padrao}])
         conn.update(worksheet="Config_Global", data=df_g)
     except Exception as e:
-        st.error(f"Erro ao salvar na nuvem: {e}")
+        st.error(f"Erro ao salvar: {e}")
 
 def carregar_dados():
     if not GSHEETS_DISPONIVEL: return
@@ -54,7 +84,6 @@ def carregar_dados():
             
         df_c = conn.read(worksheet="Config_Ruas")
         if df_c is not None and not df_c.empty:
-            # Proteção ao carregar: garante que cada rua tenha 'cap' e 'alt'
             for _, row in df_c.iterrows():
                 st.session_state.config_ruas[row['Rua']] = {
                     'cap': int(row.get('Capacidade', 41)), 
@@ -110,7 +139,6 @@ def inicializar_rua(nome_rua, capacidade, altura_max):
         st.session_state.estoque = df_nova
     else:
         st.session_state.estoque = pd.concat([st.session_state.estoque[st.session_state.estoque['Rua'] != nome_rua], df_nova])
-    
     st.session_state.config_ruas[nome_rua] = {'cap': capacidade, 'alt': altura_max}
     salvar_dados()
 
@@ -118,83 +146,116 @@ def inicializar_rua(nome_rua, capacidade, altura_max):
 lista_ruas = [f"Rua {l}{n}" for l in string.ascii_uppercase for n in [1, 2]]
 
 with st.sidebar:
-    st.title("⚙️ Operações")
+    st.title("⚙️ Painel de Controle")
     rua_sel = st.selectbox("📍 Selecionar Rua", lista_ruas)
     
-    # PROTEÇÃO: Se a rua não existe ou está incompleta, inicializa
-    if rua_sel not in st.session_state.config_ruas or 'cap' not in st.session_state.config_ruas[rua_sel]:
+    if rua_sel not in st.session_state.config_ruas:
         inicializar_rua(rua_sel, 41, 3)
 
-    with st.expander("🏗️ Estrutura da Rua"):
-        # LINHA CORRIGIDA COM .get() PARA EVITAR TYPEERROR
-        val_cap_atual = st.session_state.config_ruas[rua_sel].get('cap', 41)
-        val_alt_atual = st.session_state.config_ruas[rua_sel].get('alt', 3)
-        
-        cap_ajuste = st.number_input("Capacidade", 1, 41, int(val_cap_atual))
-        alt_ajuste = st.selectbox("Altura Máxima", [1, 2, 3], index=int(val_alt_atual)-1)
-        
-        if st.button("🔧 Reconstruir Rua"):
+    with st.expander("🏗️ Configurar Rua"):
+        val_cap = st.session_state.config_ruas[rua_sel].get('cap', 41)
+        val_alt = st.session_state.config_ruas[rua_sel].get('alt', 3)
+        cap_ajuste = st.number_input("Capacidade", 1, 41, int(val_cap))
+        alt_ajuste = st.selectbox("Altura Máxima", [1, 2, 3], index=int(val_alt)-1)
+        if st.button("🔧 Atualizar Estrutura"):
             inicializar_rua(rua_sel, cap_ajuste, alt_ajuste)
             st.rerun()
     
     st.divider()
-    st.session_state.cap_total_galpao = st.number_input("Capacidade Galpão", 1, 50000, st.session_state.cap_total_galpao)
-    if st.button("🔄 Sincronizar Nuvem"):
+    if st.button("☁️ Forçar Sincronização"):
         salvar_dados()
-        st.success("Sincronizado!")
+        st.toast("Dados sincronizados com sucesso!", icon="☁️")
 
-# --- DASHBOARD ---
-ocupados_global = len(st.session_state.estoque[st.session_state.estoque['Status'].isin(['Disponível', 'Reservado'])]) if not st.session_state.estoque.empty else 0
-perc = (ocupados_global / st.session_state.cap_total_galpao) * 100
-c1, c2, c3 = st.columns(3)
-c1.metric("Estoque Total", ocupados_global)
-c2.metric("Capacidade Galpão", st.session_state.cap_total_galpao)
-c3.metric("Ocupação", f"{perc:.1f}%")
-st.progress(min(perc/100, 1.0))
+# --- DASHBOARD DE MÉTRICAS ---
+st.title(f"🚜 Gestão: {rua_sel}")
 
-# --- TABS OPERACIONAIS (ENTRADA/RESERVA/SAÍDA) ---
-st.divider()
+# Dados da Rua Atual
 df_atual = st.session_state.estoque[st.session_state.estoque['Rua'] == rua_sel]
-tab1, tab2, tab3 = st.tabs(["📥 Entrada", "🟠 Reserva", "⚪ Saída"])
+cap_rua = st.session_state.config_ruas[rua_sel].get('cap', 41)
+qtd_vazio = len(df_atual[df_atual['Status'] == 'Vazio'])
+qtd_disp = len(df_atual[df_atual['Status'] == 'Disponível'])
+qtd_res = len(df_atual[df_atual['Status'] == 'Reservado'])
 
-with tab1:
-    col_a, col_b, col_c = st.columns(3)
-    l_in = col_a.text_input("Lote")
-    v_in = col_b.date_input("Validade")
-    q_in = col_c.number_input("Quantidade", 1, 41)
-    if st.button("📥 Confirmar"):
-        vagas = st.session_state.estoque[(st.session_state.estoque['Rua'] == rua_sel) & (st.session_state.estoque['Status'] == 'Vazio')].sort_values(by=['Fileira', 'Nivel'], ascending=[False, True])
-        agora = datetime.now().strftime("%d/%m/%Y %H:%M")
-        for i in range(min(int(q_in), len(vagas))):
-            idx = vagas.index[i]
-            st.session_state.estoque.at[idx, 'Lote'], st.session_state.estoque.at[idx, 'Validade'], st.session_state.estoque.at[idx, 'Status'], st.session_state.estoque.at[idx, 'Data_Entrada'] = l_in, v_in, 'Disponível', agora
-        salvar_dados(); st.rerun()
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Capacidade", cap_rua)
+col2.metric("Vagas Livres", qtd_vazio)
+col3.metric("Disponíveis", qtd_disp)
+col4.metric("Reservados", qtd_res)
 
-with tab2:
-    col_a, col_b = st.columns(2)
-    cli = col_a.text_input("Cliente")
-    q_res = col_b.number_input("Qtd Reserva", 1, 41)
-    if st.button("🟠 Reservar"):
-        disp = st.session_state.estoque[(st.session_state.estoque['Rua'] == rua_sel) & (st.session_state.estoque['Status'] == 'Disponível')].sort_values(by='ID')
-        for i in range(min(int(q_res), len(disp))):
-            idx = disp.index[i]
-            st.session_state.estoque.at[idx, 'Status'], st.session_state.estoque.at[idx, 'Cliente'] = 'Reservado', cli.upper()
-        salvar_dados(); st.rerun()
+st.divider()
 
-with tab3:
-    col_a, col_b = st.columns(2)
-    q_out = col_a.number_input("Qtd Saída", 1, 41)
-    modo = col_b.radio("Regra:", ["Somente Reservados", "Saída Direta"], horizontal=True)
-    if st.button("⚪ Retirar"):
+# --- ÁREA DE OPERAÇÕES POLIDA ---
+tab_ent, tab_res, tab_sai = st.tabs(["📥 ENTRADA", "🟠 RESERVA", "⚪ SAÍDA"])
+
+with tab_ent:
+    st.markdown("##### Registrar Novo Lote")
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1: lote_in = st.text_input("📦 Lote / Produto", placeholder="Ex: CX-900")
+    with c2: val_in = st.date_input("📅 Validade")
+    with c3: 
+        qtd_in = st.number_input("🔢 Qtd", 1, max(1, qtd_vazio), value=1)
+    
+    # Botão de ação com cor primária
+    if st.button("📥 Confirmar Entrada", type="primary"):
+        vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[False, True])
+        if len(vagas) < qtd_in:
+            st.error("Espaço insuficiente!")
+        else:
+            agora = datetime.now().strftime("%d/%m %H:%M")
+            for i in range(int(qtd_in)):
+                idx = vagas.index[i]
+                st.session_state.estoque.at[idx, 'Lote'] = lote_in
+                st.session_state.estoque.at[idx, 'Validade'] = val_in
+                st.session_state.estoque.at[idx, 'Status'] = 'Disponível'
+                st.session_state.estoque.at[idx, 'Data_Entrada'] = agora
+            salvar_dados()
+            st.toast(f"{qtd_in} pallets adicionados com sucesso!", icon="✅")
+            st.rerun()
+
+with tab_res:
+    st.markdown("##### Reservar para Cliente")
+    c1, c2 = st.columns([3, 1])
+    with c1: cli_res = st.text_input("👤 Nome do Cliente", placeholder="Ex: Supermercado X")
+    with c2: qtd_res_in = st.number_input("🔢 Qtd Reservar", 1, max(1, qtd_disp), value=1)
+    
+    if st.button("🟠 Efetuar Reserva"):
+        if not cli_res:
+            st.warning("Digite o nome do cliente.")
+        else:
+            disponiveis = df_atual[df_atual['Status'] == 'Disponível'].sort_values(by='ID')
+            for i in range(int(qtd_res_in)):
+                idx = disponiveis.index[i]
+                st.session_state.estoque.at[idx, 'Status'] = 'Reservado'
+                st.session_state.estoque.at[idx, 'Cliente'] = cli_res.upper()
+            salvar_dados()
+            st.toast("Reserva realizada!", icon="🟠")
+            st.rerun()
+
+with tab_sai:
+    st.markdown("##### Retirada de Pallets")
+    c1, c2 = st.columns([1, 2])
+    with c1: qtd_out = st.number_input("🔢 Qtd Retirar", 1, cap_rua, value=1)
+    with c2: modo = st.radio("Modo de Saída:", ["Somente Reservados", "Qualquer (Saída Direta)"], horizontal=True)
+    
+    if st.button("⚪ Confirmar Saída"):
         filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
-        alvos = st.session_state.estoque[(st.session_state.estoque['Rua'] == rua_sel) & (st.session_state.estoque['Status'].isin(filtro))].sort_values(by='ID')
-        for i in range(min(int(q_out), len(alvos))):
-            idx = alvos.index[i]
-            st.session_state.estoque.loc[idx, ['Lote', 'Status', 'Validade', 'Cliente', 'Data_Entrada']] = ["", "Vazio", None, "", None]
-        salvar_dados(); st.rerun()
+        alvos = df_atual[df_atual['Status'].isin(filtro)].sort_values(by='ID')
+        
+        if len(alvos) < qtd_out:
+            st.error("Não há pallets suficientes para essa retirada.")
+        else:
+            for i in range(int(qtd_out)):
+                idx = alvos.index[i]
+                colunas_limpar = ['Lote', 'Status', 'Validade', 'Cliente', 'Data_Entrada']
+                st.session_state.estoque.loc[idx, colunas_limpar] = ["", "Vazio", None, "", None]
+            salvar_dados()
+            st.toast("Saída registrada!", icon="👋")
+            st.rerun()
+
+st.divider()
 
 # --- MAPA VISUAL ---
-st.subheader(f"🗺️ Mapa: {rua_sel}")
+st.subheader("🗺️ Mapa Visual")
 df_mapa = st.session_state.estoque[st.session_state.estoque['Rua'] == rua_sel].copy()
 df_mapa['Visual'] = df_mapa['Status']
 df_mapa['Aura_FEFO'] = False
@@ -219,14 +280,15 @@ def style_fn(x):
         for c in x.columns:
             v = mapa_v.loc[r, c]
             fefo = mapa_fefo.loc[r, c]
-            borda = "border: 4px solid #FFFF00; box-shadow: inset 0 0 10px #FFFF00;" if fefo else "border: 1px solid #ddd;"
+            borda = "border: 4px solid #FFFF00; box-shadow: inset 0 0 10px #FFFF00;" if fefo else "border: 1px solid #dee2e6;"
             if v == "TROCA": color = 'background-color: #007bff; color: white;' 
             elif v == "Disponível": color = 'background-color: #28a745; color: white' 
             elif v == "Reservado": color = 'background-color: #fd7e14; color: white' 
             elif v == "Vazio": color = 'background-color: #ffffff; color: #adb5bd;' 
             else: color = 'background-color: #f8f9fa; color: #f8f9fa; border: none;' 
-            style_df.loc[r, c] = f'{color} {borda} font-size: 10px; font-weight: bold; text-align: center; height: 85px; min-width: 105px; white-space: pre-wrap; border-radius: 5px;'
+            style_df.loc[r, c] = f'{color} {borda} font-size: 10px; font-weight: bold; text-align: center; height: 85px; min-width: 100px; white-space: pre-wrap; border-radius: 8px;'
     return style_df
 
 st.table(mapa_t[sorted(mapa_t.columns, reverse=True)].sort_index(ascending=False).style.apply(style_fn, axis=None))
-st.dataframe(df_mapa[df_mapa['Status'] != "Vazio"].sort_values(by='ID')[['ID', 'Lote', 'Validade', 'Status', 'Cliente', 'Data_Entrada']], use_container_width=True, hide_index=True)
+
+st.caption("Legenda: 🟢 Disponível | 🟠 Reservado | 🔵 Início de Lote | 🟡 Alerta Vencimento")
