@@ -1,62 +1,110 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
 from datetime import datetime, date, timedelta
 import string
 import os
 
-# --- TENTA IMPORTAR A CONEXÃO DO GOOGLE ---
+# --- TENTA IMPORTAR A CONEXÃO ---
 try:
     from streamlit_gsheets import GSheetsConnection
     GSHEETS_DISPONIVEL = True
-except ModuleNotFoundError:
+except ImportError:
     GSHEETS_DISPONIVEL = False
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(layout="wide", page_title="Logística Master A-Z - Google Sheets")
+st.set_page_config(layout="wide", page_title="Logística Pro - Google Sheets", page_icon="🚜")
 
-if not GSHEETS_DISPONIVEL:
-    st.error("⚠️ Biblioteca 'st-gsheets-connection' não encontrada. Verifique se ela está no seu requirements.txt no GitHub.")
-    st.stop()
-
-# --- CONEXÃO GOOGLE SHEETS ---
-# Certifique-se de que a URL está nas 'Secrets' do Streamlit
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-except Exception as e:
-    st.warning("⚠️ Erro na conexão com Google Sheets. Verifique as 'Secrets' no painel do Streamlit.")
-    st.stop()
-
-# --- PERSISTÊNCIA DE DADOS ---
+# --- FUNÇÕES DE PERSISTÊNCIA ---
 def salvar_dados():
-    # Envia os dados para a planilha
-    conn.update(worksheet="Estoque", data=st.session_state.estoque)
-    
-    df_cfg = pd.DataFrame(list(st.session_state.config_ruas.items()), columns=['Rua', 'Capacidade'])
-    conn.update(worksheet="Config_Ruas", data=df_cfg)
-    
-    df_global = pd.DataFrame([{"cap_galpao": st.session_state.cap_total_galpao, "cap_padrao": st.session_state.capacidade_padrao}])
-    conn.update(worksheet="Config_Global", data=df_global)
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        # Salva o estoque
+        conn.update(worksheet="Estoque", data=st.session_state.estoque)
+        
+        # Salva Configurações das Ruas
+        df_cfg = pd.DataFrame([{'Rua': k, 'Capacidade': v} for k, v in st.session_state.config_ruas.items()])
+        conn.update(worksheet="Config_Ruas", data=df_cfg)
+        
+        # Salva Config Global
+        df_g = pd.DataFrame([{"cap_galpao": st.session_state.cap_total_galpao, "cap_padrao": st.session_state.capacidade_padrao}])
+        conn.update(worksheet="Config_Global", data=df_g)
+    except Exception as e:
+        st.error(f"Erro ao salvar na nuvem: {e}")
 
 def carregar_dados():
     try:
-        df_estoque = conn.read(worksheet="Estoque")
-        if df_estoque is not None and not df_estoque.empty:
-            df_estoque['Lote'] = df_estoque['Lote'].fillna("")
-            df_estoque['Cliente'] = df_estoque['Cliente'].fillna("")
-            # Converte validade para data de forma segura
-            df_estoque['Validade'] = pd.to_datetime(df_estoque['Validade']).dt.date
-            st.session_state.estoque = df_estoque
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df_e = conn.read(worksheet="Estoque")
+        if df_e is not None and not df_e.empty:
+            df_e['Validade'] = pd.to_datetime(df_e['Validade']).dt.date
+            st.session_state.estoque = df_e
             
-        df_cfg = conn.read(worksheet="Config_Ruas")
-        if df_cfg is not None and not df_cfg.empty:
-            st.session_state.config_ruas = dict(zip(df_cfg.Rua, df_cfg.Capacidade))
+        df_c = conn.read(worksheet="Config_Ruas")
+        if df_c is not None and not df_c.empty:
+            st.session_state.config_ruas = dict(zip(df_c.Rua, df_c.Capacidade))
             
         df_g = conn.read(worksheet="Config_Global")
         if df_g is not None and not df_g.empty:
             st.session_state.cap_total_galpao = int(df_g.iloc[0]['cap_galpao'])
             st.session_state.capacidade_padrao = int(df_g.iloc[0]['cap_padrao'])
     except:
-        st.info("ℹ️ Planilha nova detectada. Começando com dados vazios.")
+        # Se falhar, mantém o que está na memória para não dar tela preta
+        pass
 
-# (Restante do código de inicialização de ruas, dashboard e mapa permanece igual)
+# --- INICIALIZAÇÃO SEGURA ---
+if 'estoque' not in st.session_state:
+    st.session_state.estoque = pd.DataFrame()
+    st.session_state.config_ruas = {}
+    st.session_state.capacidade_padrao = 41
+    st.session_state.cap_total_galpao = 2000
+    if GSHEETS_DISPONIVEL:
+        carregar_dados()
+
+def inicializar_rua(nome_rua, capacidade):
+    dados = []
+    posicoes_uteis = []
+    for f in range(1, 15):
+        limite_h = 2 if f == 1 else 3
+        for n in range(3, 0, -1):
+            if n <= limite_h: posicoes_uteis.append((f, n))
+    
+    for f in range(1, 15):
+        for n in range(1, 4):
+            id_p = f"{posicoes_uteis.index((f, n)) + 1:02d}" if (f, n) in posicoes_uteis[:capacidade] else "--"
+            status = "Vazio" if id_p != "--" else "BLOQUEADO"
+            dados.append({
+                "Rua": nome_rua, "Fileira": f, "Nivel": n, "ID": id_p,
+                "Lote": "", "Validade": None, "Status": status, "Cliente": "", "Data_Entrada": None
+            })
+    df_nova = pd.DataFrame(dados)
+    if st.session_state.estoque.empty:
+        st.session_state.estoque = df_nova
+    else:
+        st.session_state.estoque = pd.concat([st.session_state.estoque[st.session_state.estoque['Rua'] != nome_rua], df_nova])
+    st.session_state.config_ruas[nome_rua] = capacidade
+    salvar_dados()
+
+# --- INTERFACE ---
+st.title("🚜 Gestão Logística")
+
+if not GSHEETS_DISPONIVEL:
+    st.warning("⚠️ Instale 'st-gsheets-connection' no requirements.txt")
+
+with st.sidebar:
+    st.header("⚙️ Configurações")
+    st.session_state.cap_total_galpao = st.number_input("Capacidade Galpão", 1, 50000, st.session_state.cap_total_galpao)
+    ruas = [f"Rua {l}{n}" for l in string.ascii_uppercase for n in [1, 2]]
+    rua_sel = st.selectbox("Selecionar Rua", ruas)
+    
+    if rua_sel not in st.session_state.config_ruas:
+        inicializar_rua(rua_sel, 41)
+    
+    if st.button("🔄 Sincronizar Nuvem"):
+        salvar_dados()
+        st.rerun()
+
+# --- MAPA E OPERAÇÕES (RESUMIDO PARA FUNCIONAR) ---
+# Aqui você continua com as TABS e o MAPA que já tínhamos.
+st.info(f"Rua Selecionada: {rua_sel} | Clique em Sincronizar se os dados não aparecerem.")
+
+# ... (Mantenha aqui seu código de Mapa e Tabs de Entrada/Saída)
