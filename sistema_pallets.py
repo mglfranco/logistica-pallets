@@ -14,7 +14,7 @@ except ImportError:
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Logística Pro - Autosave", page_icon="🚜")
 
-# --- CSS (Design Responsivo e Dark Mode) ---
+# --- CSS ---
 st.markdown("""
     <style>
     div[data-testid="stMetric"] {
@@ -97,42 +97,41 @@ if 'estoque' not in st.session_state:
     st.session_state.cap_total_galpao = 2000
     carregar_dados() 
 
-# --- CORREÇÃO AQUI: LÓGICA DO CHÃO (NÍVEL 1) PRIMEIRO ---
+# --- NOVA LÓGICA DE ESTRUTURA DA RUA ---
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
-    posicoes_uteis = []
-    altura_saida = max(1, altura_max - 1)
-
-    # 1. GERA AS POSIÇÕES FÍSICAS POSSÍVEIS
-    # Ordem: Fileira 1 -> Nivel 1, Nivel 2, Nivel 3...
-    for f in range(1, 15):
-        limite_f = altura_saida if f == 1 else altura_max
-        # MUDANÇA: Loop de 1 até altura_max (Crescente: Chão -> Teto)
-        for n in range(1, altura_max + 1):
-            if n <= limite_f:
-                posicoes_uteis.append((f, n))
     
-    # 2. APLICA A CAPACIDADE (Corta quem sobrar)
-    # Como a lista foi criada do chão pro teto, o "corte" tira os últimos (tetos/fundos)
-    posicoes_validas = posicoes_uteis[:capacidade]
-
-    # 3. PREENCHE O DATAFRAME
+    # 1. Gera TODAS as posições possíveis baseadas na altura (Sem cortar nada no começo)
+    posicoes_possiveis = []
+    
+    # Preenche Fileira por Fileira (F1 inteira, depois F2 inteira...)
+    # Dentro da fileira, preenche do Chão (1) ao Teto (altura_max)
     for f in range(1, 15):
-        for n in range(1, 4):
+        for n in range(1, altura_max + 1):
+            posicoes_possiveis.append((f, n))
+            
+    # 2. Define quais posições recebem ID baseado na CAPACIDADE
+    # Isso garante que ID 01 seja sempre o primeiro slot, ID 41 seja o último.
+    # Se reduzir a capacidade, ele corta do fim da lista (os IDs maiores).
+    posicoes_validas = posicoes_possiveis[:capacidade]
+
+    # 3. Monta o DataFrame para o Mapa
+    for f in range(1, 15):
+        for n in range(1, 4): # Loop fixo visual de 3 andares (padrão visual)
             status = "Vazio"
             id_p = "--"
-            limite_atual = altura_saida if f == 1 else altura_max
             
-            # Se a posição física existe...
-            if n <= limite_atual:
-                # ...e está dentro da capacidade escolhida
+            # Só processa se o nível for fisicamente possível na altura configurada
+            if n <= altura_max:
                 if (f, n) in posicoes_validas:
-                    # Calcula ID baseado na ordem da lista (ID 01 será F1 N1)
+                    # Calcula o ID sequencial (1, 2, 3...)
                     idx_num = posicoes_validas.index((f, n)) + 1
                     id_p = f"{idx_num:02d}"
                 else:
+                    # Se existe fisicamente (nível <= altura) mas passou da capacidade -> BLOQUEADO
                     status = "BLOQUEADO"
             else:
+                # Se o nível for maior que a altura da rua (ex: Nível 3 numa rua de altura 2) -> BLOQUEADO
                 status = "BLOQUEADO"
             
             dados.append({
@@ -146,7 +145,6 @@ def inicializar_rua(nome_rua, capacidade, altura_max):
     if st.session_state.estoque.empty:
         st.session_state.estoque = df_nova
     else:
-        # Remove dados antigos dessa rua e põe os novos
         st.session_state.estoque = pd.concat([st.session_state.estoque[st.session_state.estoque['Rua'] != nome_rua], df_nova])
     
     st.session_state.config_ruas[nome_rua] = {'cap': capacidade, 'alt': altura_max}
