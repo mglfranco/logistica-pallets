@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, date, timedelta
 import string
-import os
+import time
 
 # --- TENTA IMPORTAR A CONEXÃO COM GOOGLE SHEETS ---
 try:
@@ -12,9 +12,9 @@ except ImportError:
     GSHEETS_DISPONIVEL = False
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(layout="wide", page_title="Logística Pro - Autosave", page_icon="🚜")
+st.set_page_config(layout="wide", page_title="Logística Real-Time", page_icon="🚜")
 
-# --- CSS (Design Responsivo e Dark Mode) ---
+# --- CSS ---
 st.markdown("""
     <style>
     div[data-testid="stMetric"] {
@@ -22,7 +22,6 @@ st.markdown("""
         border: 1px solid var(--faded-text-10);
         border-radius: 10px;
         padding: 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
     div.stButton > button {
         width: 100%;
@@ -34,54 +33,66 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- FUNÇÃO MÁGICA DE SALVAR (AUTOSAVE) ---
+# --- FUNÇÕES DE BANCO DE DADOS (CORRIGIDAS) ---
 def salvar_dados():
+    """Salva e limpa o cache para garantir que a próxima leitura seja nova."""
     if not GSHEETS_DISPONIVEL: return
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
-        conn.update(worksheet="Estoque", data=st.session_state.estoque)
         
-        df_cfg = pd.DataFrame([
-            {'Rua': k, 'Capacidade': v.get('cap', 41), 'Altura': v.get('alt', 3)} 
-            for k, v in st.session_state.config_ruas.items()
-        ])
-        conn.update(worksheet="Config_Ruas", data=df_cfg)
-        
-        df_g = pd.DataFrame([{"cap_galpao": st.session_state.cap_total_galpao, "cap_padrao": st.session_state.capacidade_padrao}])
-        conn.update(worksheet="Config_Global", data=df_g)
-        
-        st.toast("Alterações salvas na nuvem!", icon="☁️")
+        # Feedback visual de salvamento
+        with st.spinner('Salvando na nuvem...'):
+            conn.update(worksheet="Estoque", data=st.session_state.estoque)
+            
+            df_cfg = pd.DataFrame([
+                {'Rua': k, 'Capacidade': v.get('cap', 41), 'Altura': v.get('alt', 3)} 
+                for k, v in st.session_state.config_ruas.items()
+            ])
+            conn.update(worksheet="Config_Ruas", data=df_cfg)
+            
+            df_g = pd.DataFrame([{"cap_galpao": st.session_state.cap_total_galpao, "cap_padrao": st.session_state.capacidade_padrao}])
+            conn.update(worksheet="Config_Global", data=df_g)
+            
+            # CRÍTICO: Limpa o cache do Streamlit para forçar recarregamento
+            st.cache_data.clear()
+            
+        st.toast("Salvo com segurança!", icon="✅")
         
     except Exception as e:
-        st.error(f"Erro no Autosave: {e}")
+        st.error(f"Erro ao Salvar: {e}")
 
 def carregar_dados():
+    """Lê os dados com ttl=0 para garantir que não pegue versão velha."""
     if not GSHEETS_DISPONIVEL: return
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
-        df_e = conn.read(worksheet="Estoque")
+        
+        # ttl=0 OBRIGA o sistema a ir no Google buscar o dado novo
+        df_e = conn.read(worksheet="Estoque", ttl=0)
+        
         if df_e is not None and not df_e.empty:
             df_e['Validade'] = pd.to_datetime(df_e['Validade']).dt.date
-            # BLINDAGEM: Garante que ID seja lido como string para não dar erro no sort
+            # Converte tudo para string para evitar erros de ordenação
             df_e['ID'] = df_e['ID'].astype(str)
             df_e['Lote'] = df_e['Lote'].fillna("").astype(str)
             df_e['Cliente'] = df_e['Cliente'].fillna("").astype(str)
             st.session_state.estoque = df_e
             
-        df_c = conn.read(worksheet="Config_Ruas")
+        df_c = conn.read(worksheet="Config_Ruas", ttl=0)
         if df_c is not None and not df_c.empty:
+            st.session_state.config_ruas = {} # Limpa antes de carregar
             for _, row in df_c.iterrows():
                 st.session_state.config_ruas[row['Rua']] = {
                     'cap': int(row.get('Capacidade', 41)), 
                     'alt': int(row.get('Altura', 3))
                 }
             
-        df_g = conn.read(worksheet="Config_Global")
+        df_g = conn.read(worksheet="Config_Global", ttl=0)
         if df_g is not None and not df_g.empty:
             st.session_state.cap_total_galpao = int(df_g.iloc[0]['cap_galpao'])
-            st.session_state.capacidade_padrao = int(df_g.iloc[0]['cap_padrao'])
-    except:
-        pass
+    except Exception as e:
+        st.warning(f"Tentando reconectar... ({e})")
+        time.sleep(1)
 
 # --- INICIALIZAÇÃO ---
 if 'estoque' not in st.session_state:
@@ -89,7 +100,7 @@ if 'estoque' not in st.session_state:
     st.session_state.config_ruas = {}
     st.session_state.capacidade_padrao = 41
     st.session_state.cap_total_galpao = 2000
-    carregar_dados()
+    carregar_dados() # Carrega assim que abre
 
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
@@ -129,14 +140,14 @@ def inicializar_rua(nome_rua, capacidade, altura_max):
 lista_ruas = [f"Rua {l}{n}" for l in string.ascii_uppercase for n in [1, 2]]
 
 with st.sidebar:
-    st.header("⚙️ Painel de Controle")
+    st.header("⚙️ Painel")
     rua_sel = st.selectbox("📍 Selecionar Rua", lista_ruas)
     
     if rua_sel not in st.session_state.config_ruas:
         inicializar_rua(rua_sel, 41, 3)
 
     st.divider()
-    with st.expander("🏗️ Configurar Rua (Auto)"):
+    with st.expander("🏗️ Configurar Rua"):
         val_cap = st.session_state.config_ruas[rua_sel].get('cap', 41)
         val_alt = st.session_state.config_ruas[rua_sel].get('alt', 3)
         
@@ -147,22 +158,17 @@ with st.sidebar:
             inicializar_rua(rua_sel, novo_cap, novo_alt)
             st.rerun()
     
+    # Botão de salvamento MANUAL de segurança
     st.divider()
-    st.subheader("🏢 Galpão Geral")
-    st.session_state.cap_total_galpao = st.number_input(
-        "Capacidade Total", 
-        1, 100000, 
-        st.session_state.cap_total_galpao,
-        on_change=salvar_dados
-    )
+    if st.button("☁️ FORÇAR SALVAMENTO", type="primary"):
+        salvar_dados()
 
 # --- CONTEÚDO PRINCIPAL ---
-st.title(f"🚜 Gestão Logística: {rua_sel}")
+st.title(f"🚜 Gestão: {rua_sel}")
 
 # Busca Rápida
-busca = st.text_input("🔍 Buscar:", placeholder="Lote ou Cliente...")
+busca = st.text_input("🔍 Buscar Lote/Cliente:", placeholder="Digite...")
 if busca:
-    # Garante que Lote e Cliente sejam string antes da busca
     res = st.session_state.estoque[
         st.session_state.estoque['Lote'].astype(str).str.contains(busca, case=False) | 
         st.session_state.estoque['Cliente'].astype(str).str.contains(busca, case=False)
@@ -184,6 +190,7 @@ c2.metric("Livres", qtd_vazio)
 c3.metric("Disponíveis", qtd_disp)
 c4.metric("Reservados", qtd_res)
 
+# Barra de Progresso Global
 ocupados_global = len(st.session_state.estoque[st.session_state.estoque['Status'].isin(['Disponível', 'Reservado'])]) if not st.session_state.estoque.empty else 0
 perc = (ocupados_global / st.session_state.cap_total_galpao) * 100
 st.progress(min(perc/100, 1.0))
@@ -232,33 +239,29 @@ with tab_res:
 
 with tab_sai:
     c1, c2 = st.columns([1, 2])
-    with c2: 
-        modo = st.radio("Regra:", ["Somente Reservados", "Saída Direta"], horizontal=True)
+    with c2: modo = st.radio("Regra:", ["Somente Reservados", "Saída Direta"], horizontal=True)
     
+    # Lógica de Limites
     if modo == "Somente Reservados":
         limite_saida = qtd_res
-        msg_aviso = "Não há pallets reservados para retirar."
+        aviso = "Nada reservado."
     else:
         limite_saida = qtd_disp + qtd_res
-        msg_aviso = "A rua está vazia, nada para retirar."
-    
+        aviso = "Rua vazia."
+        
     with c1: 
         if limite_saida > 0:
             qtd_out = st.number_input("🔢 Retirar", 1, limite_saida, value=1)
         else:
             qtd_out = 0
-            st.info(msg_aviso)
+            st.info(aviso)
     
     if st.button("⚪ Confirmar Saída"):
-        if limite_saida == 0:
-            st.error("Operação inválida. Sem estoque.")
-        else:
+        if limite_saida > 0:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
             alvos = df_atual[df_atual['Status'].isin(filtro)].sort_values(by='ID')
             
-            if len(alvos) < qtd_out: 
-                st.error("Erro de contagem. Tente recarregar a página.")
-            else:
+            if len(alvos) >= qtd_out:
                 for i in range(int(qtd_out)):
                     idx = alvos.index[i]
                     st.session_state.estoque.loc[idx, ['Lote', 'Status', 'Validade', 'Cliente', 'Data_Entrada']] = ["", "Vazio", None, "", None]
@@ -270,10 +273,7 @@ st.divider()
 st.subheader("🗺️ Mapa Visual")
 df_mapa = df_atual.copy()
 if not df_mapa.empty:
-    # --- CORREÇÃO DO ERRO ---
-    # Converte ID para texto para evitar que o sort_values trave com mistura de numero/texto
-    df_mapa['ID'] = df_mapa['ID'].astype(str)
-    
+    df_mapa['ID'] = df_mapa['ID'].astype(str) # Blindagem extra
     df_mapa['Visual'] = df_mapa['Status']
     df_mapa['Aura_FEFO'] = False
     hoje = date.today()
@@ -298,13 +298,11 @@ if not df_mapa.empty:
                 v = mapa_v.loc[r, c]
                 fefo = mapa_fefo.loc[r, c]
                 borda = "border: 4px solid #FFFF00; box-shadow: inset 0 0 10px #FFFF00;" if fefo else "border: 1px solid #dee2e6;"
-                
                 if v == "TROCA": color = 'background-color: #007bff; color: white;' 
                 elif v == "Disponível": color = 'background-color: #28a745; color: white;' 
                 elif v == "Reservado": color = 'background-color: #fd7e14; color: white;' 
                 elif v == "Vazio": color = 'background-color: #e9ecef; color: #333;' 
                 else: color = 'background-color: transparent; color: transparent; border: none;' 
-                
                 style_df.loc[r, c] = f'{color} {borda} font-size: 10px; font-weight: bold; text-align: center; height: 85px; min-width: 105px; white-space: pre-wrap; border-radius: 8px;'
         return style_df
 
@@ -314,10 +312,8 @@ if not df_mapa.empty:
 st.divider()
 st.subheader("📋 Relatório")
 if not df_mapa.empty:
-    # --- CORREÇÃO DO ERRO TAMBÉM AQUI ---
-    df_mapa['ID'] = df_mapa['ID'].astype(str) 
+    df_mapa['ID'] = df_mapa['ID'].astype(str)
     df_conf = df_mapa[df_mapa['Status'] != "Vazio"].sort_values(by='ID').copy()
-    
     if not df_conf.empty:
         df_conf['Status FEFO'] = df_conf['Aura_FEFO'].apply(lambda x: "⚠️ VENCENDO" if x else "✅ OK")
         st.dataframe(
