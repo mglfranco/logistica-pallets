@@ -93,27 +93,37 @@ if 'estoque' not in st.session_state:
     st.session_state.cap_total_galpao = 2000
     carregar_dados() 
 
+# --- LÓGICA PADRÃO PARA TODAS AS RUAS ---
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
     
+    # 1. Gera estrutura física
     posicoes_possiveis = []
     for f in range(1, 15):
-        # Altura Maxima 2 na Fileira 1
+        # REGRA UNIVERSAL: Fileira 1 tem altura máx 2. As outras seguem a config.
         limite_altura = 2 if f == 1 else altura_max
         
         for n in range(1, limite_altura + 1):
             posicoes_possiveis.append((f, n))
             
+    # 2. Aplica capacidade (corta os últimos)
     posicoes_ativas = posicoes_possiveis[:capacidade]
 
+    # 3. Cria slots
     for f in range(1, 15):
+        limite_visual = 2 if f == 1 else altura_max
+        
         for n in range(1, 4): 
             status = "Vazio"
             id_p = "--"
             
-            if (f, n) in posicoes_ativas:
-                idx_num = posicoes_ativas.index((f, n)) + 1
-                id_p = f"{idx_num:02d}"
+            # Só cria se existir fisicamente nessa regra
+            if n <= limite_visual:
+                if (f, n) in posicoes_ativas:
+                    idx_num = posicoes_ativas.index((f, n)) + 1
+                    id_p = f"{idx_num:02d}"
+                else:
+                    status = "BLOQUEADO"
             else:
                 status = "BLOQUEADO"
             
@@ -123,10 +133,12 @@ def inicializar_rua(nome_rua, capacidade, altura_max):
             })
     
     df_nova = pd.DataFrame(dados)
-    if st.session_state.estoque.empty:
-        st.session_state.estoque = df_nova
-    else:
-        st.session_state.estoque = pd.concat([st.session_state.estoque[st.session_state.estoque['Rua'] != nome_rua], df_nova])
+    
+    # Remove dados antigos dessa rua e insere os novos
+    if not st.session_state.estoque.empty:
+        st.session_state.estoque = st.session_state.estoque[st.session_state.estoque['Rua'] != nome_rua]
+    
+    st.session_state.estoque = pd.concat([st.session_state.estoque, df_nova], ignore_index=True)
     st.session_state.config_ruas[nome_rua] = {'cap': capacidade, 'alt': altura_max}
     salvar_dados()
 
@@ -137,6 +149,7 @@ with st.sidebar:
     st.header("⚙️ Painel")
     rua_sel = st.selectbox("📍 Selecionar Rua", lista_ruas)
     
+    # Se a rua nunca foi visitada, cria ela agora
     if rua_sel not in st.session_state.config_ruas:
         inicializar_rua(rua_sel, 41, 3)
 
@@ -151,6 +164,13 @@ with st.sidebar:
         if novo_cap != val_cap or novo_alt != val_alt:
             inicializar_rua(rua_sel, novo_cap, novo_alt)
             st.rerun()
+            
+    # --- BOTÃO PARA CORRIGIR RUAS ANTIGAS ---
+    if st.button("♻️ REINICIAR RUA (Aplicar Padrão)", type="secondary"):
+        inicializar_rua(rua_sel, novo_cap, novo_alt)
+        st.toast(f"{rua_sel} resetada para o padrão correto!")
+        time.sleep(1)
+        st.rerun()
 
     st.divider()
     st.header("🏢 Galpão Global")
@@ -212,8 +232,7 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
-            # ENTRADA: Ordena por Nivel CRESCENTE (1 -> 3)
-            # Enche o chão primeiro
+            # ENTRADA: Baixo para Cima (Nivel ASC), Frente para Fundo (Fileira ASC)
             vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[True, True])
             
             agora = datetime.now().strftime("%d/%m %H:%M")
@@ -234,8 +253,7 @@ with tab_res:
     if st.button("🟠 Reservar"):
         if not cli_res: st.warning("Digite o cliente")
         else:
-            # RESERVA: Ordena por Nivel DECRESCENTE (3 -> 1)
-            # Reserva os do topo primeiro (próximos da saída)
+            # RESERVA: Cima para Baixo (Nivel DESC) - Tira do topo
             disp = df_atual[df_atual['Status'] == 'Disponível'].sort_values(by=['Fileira', 'Nivel'], ascending=[True, False])
             
             for i in range(int(qtd_res_in)):
@@ -267,8 +285,7 @@ with tab_sai:
         if limite_saida > 0:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
             
-            # SAÍDA: Ordena por Nivel DECRESCENTE (3 -> 1)
-            # Tira do topo primeiro. ID 01 (chão) fica por último.
+            # SAÍDA: Cima para Baixo (Nivel DESC) - Tira do topo (LIFO vertical)
             alvos = df_atual[df_atual['Status'].isin(filtro)].sort_values(by=['Fileira', 'Nivel'], ascending=[True, False])
             
             if len(alvos) >= qtd_out:
@@ -299,7 +316,6 @@ if not df_mapa.empty:
                 df_mapa.at[idx, 'Aura_FEFO'] = True
             
             if lote_ant is not None and row['Lote'] != lote_ant: 
-                # Laranja tem prioridade. Só pinta de azul se não for reservado.
                 if row['Status'] != 'Reservado':
                     df_mapa.at[idx, 'Visual'] = 'TROCA'
             
