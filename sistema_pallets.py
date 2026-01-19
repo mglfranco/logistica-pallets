@@ -96,7 +96,7 @@ if 'estoque' not in st.session_state:
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
     
-    # Gera todas as posições possíveis na ordem padrão
+    # Gera todas as posições possíveis
     posicoes_possiveis = []
     for f in range(1, 15):
         for n in range(1, altura_max + 1):
@@ -214,7 +214,7 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
-            # RESTAURADO: Fileira DESCENDENTE (False) -> Preenche do Fundo para a Frente
+            # Preenche do Fundo para a Frente (Descending)
             vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[False, True])
             agora = datetime.now().strftime("%d/%m %H:%M")
             for i in range(int(qtd_in)):
@@ -236,7 +236,7 @@ with tab_res:
         else:
             disp = df_atual[df_atual['Status'] == 'Disponível'].copy()
             disp['ID_NUM'] = pd.to_numeric(disp['ID'], errors='coerce')
-            disp = disp.sort_values(by='ID_NUM') # Reserva pelo ID (1, 2, 3...)
+            disp = disp.sort_values(by='ID_NUM') 
             
             for i in range(int(qtd_res_in)):
                 idx = disp.index[i]
@@ -269,7 +269,7 @@ with tab_sai:
             
             alvos = df_atual[df_atual['Status'].isin(filtro)].copy()
             alvos['ID_NUM'] = pd.to_numeric(alvos['ID'], errors='coerce')
-            alvos = alvos.sort_values(by='ID_NUM') # Retira pelo ID (1, 2, 3...)
+            alvos = alvos.sort_values(by='ID_NUM')
             
             if len(alvos) >= qtd_out:
                 for i in range(int(qtd_out)):
@@ -278,7 +278,7 @@ with tab_sai:
                 salvar_dados()
                 st.rerun()
 
-# --- MAPA VISUAL (RESTAURADO) ---
+# --- MAPA VISUAL ---
 st.divider()
 st.subheader("🗺️ Mapa Visual")
 df_mapa = df_atual.copy()
@@ -294,11 +294,15 @@ if not df_mapa.empty:
     lote_ant = None
     for idx, row in df_ordem.iterrows():
         if row['Status'] in ["Disponível", "Reservado"]:
+            # Aura amarela de validade
             if row['Validade'] and (row['Validade'] - hoje).days <= 180: 
                 df_mapa.at[idx, 'Aura_FEFO'] = True
             
-            if lote_ant is not None and row['Lote'] != lote_ant: 
-                df_mapa.at[idx, 'Visual'] = 'TROCA'
+            # --- CORREÇÃO AQUI: Reservado GANHA de Troca de Lote ---
+            if lote_ant is not None and row['Lote'] != lote_ant:
+                # Só pinta de AZUL se NÃO for Reservado (Reservado tem prioridade Laranja)
+                if row['Status'] != 'Reservado':
+                    df_mapa.at[idx, 'Visual'] = 'TROCA'
             
             lote_ant = row['Lote']
 
@@ -322,7 +326,7 @@ if not df_mapa.empty:
                 style_df.loc[r, c] = f'{color} {borda} font-size: 10px; font-weight: bold; text-align: center; height: 85px; min-width: 105px; white-space: pre-wrap; border-radius: 8px;'
         return style_df
 
-    # RESTAURADO: reverse=True (Fileira maior na Esquerda, Fileira 1 na Direita)
+    # Visual com Fileira Maior na Esquerda
     st.table(mapa_t[sorted(mapa_t.columns, reverse=True)].sort_index(ascending=False).style.apply(style_fn, axis=None))
 
 # --- TABELA DETALHADA ---
