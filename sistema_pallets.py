@@ -51,7 +51,6 @@ def salvar_dados():
         df_g = pd.DataFrame([{"cap_galpao": st.session_state.cap_total_galpao, "cap_padrao": st.session_state.capacidade_padrao}])
         conn.update(worksheet="Config_Global", data=df_g)
         
-        # Feedback visual discreto de que salvou
         st.toast("Alterações salvas na nuvem!", icon="☁️")
         
     except Exception as e:
@@ -125,7 +124,7 @@ def inicializar_rua(nome_rua, capacidade, altura_max):
     st.session_state.config_ruas[nome_rua] = {'cap': capacidade, 'alt': altura_max}
     salvar_dados()
 
-# --- SIDEBAR INTELIGENTE (SALVA SOZINHO) ---
+# --- SIDEBAR ---
 lista_ruas = [f"Rua {l}{n}" for l in string.ascii_uppercase for n in [1, 2]]
 
 with st.sidebar:
@@ -140,23 +139,20 @@ with st.sidebar:
         val_cap = st.session_state.config_ruas[rua_sel].get('cap', 41)
         val_alt = st.session_state.config_ruas[rua_sel].get('alt', 3)
         
-        # AQUI ESTÁ O SEGREDO: não precisa botão. Mudou, salvou.
         novo_cap = st.number_input("Capacidade", 1, 41, int(val_cap))
         novo_alt = st.selectbox("Altura", [1, 2, 3], index=int(val_alt)-1)
         
-        # Se os valores mudarem, reconstrói e salva
         if novo_cap != val_cap or novo_alt != val_alt:
             inicializar_rua(rua_sel, novo_cap, novo_alt)
             st.rerun()
     
     st.divider()
-    # O SEGREDO 2: on_change=salvar_dados
     st.subheader("🏢 Galpão Geral")
     st.session_state.cap_total_galpao = st.number_input(
         "Capacidade Total", 
         1, 100000, 
         st.session_state.cap_total_galpao,
-        on_change=salvar_dados # <--- ISSO FAZ SALVAR SOZINHO
+        on_change=salvar_dados
     )
 
 # --- CONTEÚDO PRINCIPAL ---
@@ -210,7 +206,7 @@ with tab_ent:
                 st.session_state.estoque.at[idx, 'Validade'] = val_in
                 st.session_state.estoque.at[idx, 'Status'] = 'Disponível'
                 st.session_state.estoque.at[idx, 'Data_Entrada'] = agora
-            salvar_dados() # Salva automático ao clicar
+            salvar_dados()
             st.rerun()
 
 with tab_res:
@@ -226,24 +222,47 @@ with tab_res:
                 idx = disp.index[i]
                 st.session_state.estoque.at[idx, 'Status'] = 'Reservado'
                 st.session_state.estoque.at[idx, 'Cliente'] = cli_res.upper()
-            salvar_dados() # Salva automático ao clicar
+            salvar_dados()
             st.rerun()
 
 with tab_sai:
     c1, c2 = st.columns([1, 2])
-    with c1: qtd_out = st.number_input("🔢 Retirar", 1, cap_rua, value=1)
-    with c2: modo = st.radio("Regra:", ["Somente Reservados", "Saída Direta"], horizontal=True)
+    with c2: 
+        modo = st.radio("Regra:", ["Somente Reservados", "Saída Direta"], horizontal=True)
+    
+    # LÓGICA DE LIMITE INTELIGENTE
+    if modo == "Somente Reservados":
+        limite_saida = qtd_res
+        msg_aviso = "Não há pallets reservados para retirar."
+    else:
+        # Saída Direta pega Disponíveis + Reservados (Tudo que não é vazio)
+        limite_saida = qtd_disp + qtd_res
+        msg_aviso = "A rua está vazia, nada para retirar."
+    
+    with c1: 
+        # Aqui o limite máximo do input se adapta ao que realmente existe
+        if limite_saida > 0:
+            qtd_out = st.number_input("🔢 Retirar", 1, limite_saida, value=1)
+        else:
+            qtd_out = 0
+            st.info(msg_aviso)
     
     if st.button("⚪ Confirmar Saída"):
-        filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
-        alvos = df_atual[df_atual['Status'].isin(filtro)].sort_values(by='ID')
-        if len(alvos) < qtd_out: st.error("Indisponível.")
+        if limite_saida == 0:
+            st.error("Operação inválida. Sem estoque.")
         else:
-            for i in range(int(qtd_out)):
-                idx = alvos.index[i]
-                st.session_state.estoque.loc[idx, ['Lote', 'Status', 'Validade', 'Cliente', 'Data_Entrada']] = ["", "Vazio", None, "", None]
-            salvar_dados() # Salva automático ao clicar
-            st.rerun()
+            filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
+            alvos = df_atual[df_atual['Status'].isin(filtro)].sort_values(by='ID')
+            
+            # Dupla checagem de segurança
+            if len(alvos) < qtd_out: 
+                st.error("Erro de contagem. Tente recarregar a página.")
+            else:
+                for i in range(int(qtd_out)):
+                    idx = alvos.index[i]
+                    st.session_state.estoque.loc[idx, ['Lote', 'Status', 'Validade', 'Cliente', 'Data_Entrada']] = ["", "Vazio", None, "", None]
+                salvar_dados()
+                st.rerun()
 
 # --- MAPA VISUAL ---
 st.divider()
