@@ -12,9 +12,9 @@ except ImportError:
     GSHEETS_DISPONIVEL = False
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(layout="wide", page_title="Logística Real-Time", page_icon="🚜")
+st.set_page_config(layout="wide", page_title="Logística Pro - Autosave", page_icon="🚜")
 
-# --- CSS ---
+# --- CSS (Design Responsivo e Dark Mode) ---
 st.markdown("""
     <style>
     div[data-testid="stMetric"] {
@@ -33,15 +33,14 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- FUNÇÕES DE BANCO DE DADOS (CORRIGIDAS) ---
+# --- FUNÇÕES DE BANCO DE DADOS ---
 def salvar_dados():
-    """Salva e limpa o cache para garantir que a próxima leitura seja nova."""
+    """Salva e limpa o cache."""
     if not GSHEETS_DISPONIVEL: return
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
         
-        # Feedback visual de salvamento
-        with st.spinner('Salvando na nuvem...'):
+        with st.spinner('Salvando...'):
             conn.update(worksheet="Estoque", data=st.session_state.estoque)
             
             df_cfg = pd.DataFrame([
@@ -53,26 +52,23 @@ def salvar_dados():
             df_g = pd.DataFrame([{"cap_galpao": st.session_state.cap_total_galpao, "cap_padrao": st.session_state.capacidade_padrao}])
             conn.update(worksheet="Config_Global", data=df_g)
             
-            # CRÍTICO: Limpa o cache do Streamlit para forçar recarregamento
             st.cache_data.clear()
-            
-        st.toast("Salvo com segurança!", icon="✅")
+        
+        st.toast("Salvo na nuvem!", icon="✅")
         
     except Exception as e:
         st.error(f"Erro ao Salvar: {e}")
 
 def carregar_dados():
-    """Lê os dados com ttl=0 para garantir que não pegue versão velha."""
+    """Lê os dados com ttl=0."""
     if not GSHEETS_DISPONIVEL: return
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
         
-        # ttl=0 OBRIGA o sistema a ir no Google buscar o dado novo
         df_e = conn.read(worksheet="Estoque", ttl=0)
         
         if df_e is not None and not df_e.empty:
             df_e['Validade'] = pd.to_datetime(df_e['Validade']).dt.date
-            # Converte tudo para string para evitar erros de ordenação
             df_e['ID'] = df_e['ID'].astype(str)
             df_e['Lote'] = df_e['Lote'].fillna("").astype(str)
             df_e['Cliente'] = df_e['Cliente'].fillna("").astype(str)
@@ -80,7 +76,7 @@ def carregar_dados():
             
         df_c = conn.read(worksheet="Config_Ruas", ttl=0)
         if df_c is not None and not df_c.empty:
-            st.session_state.config_ruas = {} # Limpa antes de carregar
+            st.session_state.config_ruas = {} 
             for _, row in df_c.iterrows():
                 st.session_state.config_ruas[row['Rua']] = {
                     'cap': int(row.get('Capacidade', 41)), 
@@ -91,7 +87,6 @@ def carregar_dados():
         if df_g is not None and not df_g.empty:
             st.session_state.cap_total_galpao = int(df_g.iloc[0]['cap_galpao'])
     except Exception as e:
-        st.warning(f"Tentando reconectar... ({e})")
         time.sleep(1)
 
 # --- INICIALIZAÇÃO ---
@@ -100,7 +95,7 @@ if 'estoque' not in st.session_state:
     st.session_state.config_ruas = {}
     st.session_state.capacidade_padrao = 41
     st.session_state.cap_total_galpao = 2000
-    carregar_dados() # Carrega assim que abre
+    carregar_dados() 
 
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
@@ -158,7 +153,6 @@ with st.sidebar:
             inicializar_rua(rua_sel, novo_cap, novo_alt)
             st.rerun()
     
-    # Botão de salvamento MANUAL de segurança
     st.divider()
     if st.button("☁️ FORÇAR SALVAMENTO", type="primary"):
         salvar_dados()
@@ -166,7 +160,7 @@ with st.sidebar:
 # --- CONTEÚDO PRINCIPAL ---
 st.title(f"🚜 Gestão: {rua_sel}")
 
-# Busca Rápida
+# Busca
 busca = st.text_input("🔍 Buscar Lote/Cliente:", placeholder="Digite...")
 if busca:
     res = st.session_state.estoque[
@@ -190,7 +184,7 @@ c2.metric("Livres", qtd_vazio)
 c3.metric("Disponíveis", qtd_disp)
 c4.metric("Reservados", qtd_res)
 
-# Barra de Progresso Global
+# Barra Global
 ocupados_global = len(st.session_state.estoque[st.session_state.estoque['Status'].isin(['Disponível', 'Reservado'])]) if not st.session_state.estoque.empty else 0
 perc = (ocupados_global / st.session_state.cap_total_galpao) * 100
 st.progress(min(perc/100, 1.0))
@@ -241,7 +235,6 @@ with tab_sai:
     c1, c2 = st.columns([1, 2])
     with c2: modo = st.radio("Regra:", ["Somente Reservados", "Saída Direta"], horizontal=True)
     
-    # Lógica de Limites
     if modo == "Somente Reservados":
         limite_saida = qtd_res
         aviso = "Nada reservado."
@@ -273,17 +266,29 @@ st.divider()
 st.subheader("🗺️ Mapa Visual")
 df_mapa = df_atual.copy()
 if not df_mapa.empty:
-    df_mapa['ID'] = df_mapa['ID'].astype(str) # Blindagem extra
+    df_mapa['ID'] = df_mapa['ID'].astype(str)
     df_mapa['Visual'] = df_mapa['Status']
     df_mapa['Aura_FEFO'] = False
     hoje = date.today()
 
     df_ordem = df_mapa[df_mapa['ID'] != '--'].sort_values(by='ID')
+    
+    # --- CORREÇÃO DO ERRO AZUL ---
     lote_ant = None
     for idx, row in df_ordem.iterrows():
-        if row['Status'] not in ["Vazio", "BLOQUEADO"]:
-            if row['Validade'] and (row['Validade'] - hoje).days <= 180: df_mapa.at[idx, 'Aura_FEFO'] = True
-            if lote_ant is not None and row['Lote'] != lote_ant: df_mapa.at[idx, 'Visual'] = 'TROCA'
+        # Só analisa troca de lote se NÃO for Vazio ou Bloqueado
+        if row['Status'] in ["Disponível", "Reservado"]:
+            
+            # Checa validade para aura amarela
+            if row['Validade'] and (row['Validade'] - hoje).days <= 180: 
+                df_mapa.at[idx, 'Aura_FEFO'] = True
+            
+            # Checa Troca de Lote (Azul)
+            # Se o lote anterior existir E for diferente do atual -> Pinta
+            if lote_ant is not None and row['Lote'] != lote_ant: 
+                df_mapa.at[idx, 'Visual'] = 'TROCA'
+            
+            # Atualiza o lote anterior para o atual (ignora os vazios no meio)
             lote_ant = row['Lote']
 
     df_mapa['Texto'] = df_mapa.apply(lambda r: f"P:{r['ID']}\n{str(r['Lote'])}\n{str(r['Cliente'])[:8]}" if r['Status'] not in ["Vazio", "BLOQUEADO"] else f"P:{r['ID']}" if r['Status'] == "Vazio" else "---", axis=1)
@@ -298,11 +303,13 @@ if not df_mapa.empty:
                 v = mapa_v.loc[r, c]
                 fefo = mapa_fefo.loc[r, c]
                 borda = "border: 4px solid #FFFF00; box-shadow: inset 0 0 10px #FFFF00;" if fefo else "border: 1px solid #dee2e6;"
+                
                 if v == "TROCA": color = 'background-color: #007bff; color: white;' 
                 elif v == "Disponível": color = 'background-color: #28a745; color: white;' 
                 elif v == "Reservado": color = 'background-color: #fd7e14; color: white;' 
                 elif v == "Vazio": color = 'background-color: #e9ecef; color: #333;' 
                 else: color = 'background-color: transparent; color: transparent; border: none;' 
+                
                 style_df.loc[r, c] = f'{color} {borda} font-size: 10px; font-weight: bold; text-align: center; height: 85px; min-width: 105px; white-space: pre-wrap; border-radius: 8px;'
         return style_df
 
