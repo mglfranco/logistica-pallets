@@ -49,6 +49,7 @@ def salvar_dados():
             ])
             conn.update(worksheet="Config_Ruas", data=df_cfg)
             
+            # Salva a capacidade global atualizada
             df_g = pd.DataFrame([{"cap_galpao": st.session_state.cap_total_galpao, "cap_padrao": st.session_state.capacidade_padrao}])
             conn.update(worksheet="Config_Global", data=df_g)
             
@@ -152,6 +153,19 @@ with st.sidebar:
         if novo_cap != val_cap or novo_alt != val_alt:
             inicializar_rua(rua_sel, novo_cap, novo_alt)
             st.rerun()
+
+    # --- NOVA ÁREA: CAPACIDADE GLOBAL ---
+    st.divider()
+    st.header("🏢 Galpão Global")
+    # O on_change garante que salve assim que você alterar o número
+    st.session_state.cap_total_galpao = st.number_input(
+        "Capacidade Total do Galpão", 
+        min_value=1, 
+        max_value=100000, 
+        value=int(st.session_state.cap_total_galpao),
+        step=50,
+        on_change=salvar_dados
+    )
     
     st.divider()
     if st.button("☁️ FORÇAR SALVAMENTO", type="primary"):
@@ -184,11 +198,11 @@ c2.metric("Livres", qtd_vazio)
 c3.metric("Disponíveis", qtd_disp)
 c4.metric("Reservados", qtd_res)
 
-# Barra Global
+# Barra Global (Calculada com a nova capacidade global)
 ocupados_global = len(st.session_state.estoque[st.session_state.estoque['Status'].isin(['Disponível', 'Reservado'])]) if not st.session_state.estoque.empty else 0
 perc = (ocupados_global / st.session_state.cap_total_galpao) * 100
 st.progress(min(perc/100, 1.0))
-st.caption(f"Ocupação Global: {perc:.1f}%")
+st.caption(f"Ocupação Global do Galpão: {perc:.1f}% ({ocupados_global} de {st.session_state.cap_total_galpao})")
 
 st.divider()
 
@@ -204,7 +218,7 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
-            # CORREÇÃO: Ordena numérica (Fileira desc, Nivel asc) para preencher de baixo pra cima, fundo pra frente
+            # Ordena numérica para preencher corretamente
             vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[False, True])
             agora = datetime.now().strftime("%d/%m %H:%M")
             for i in range(int(qtd_in)):
@@ -224,7 +238,7 @@ with tab_res:
     if st.button("🟠 Reservar"):
         if not cli_res: st.warning("Digite o cliente")
         else:
-            # CORREÇÃO: Cria coluna temporária numérica para ordenar ID correto (1, 2, 10) e não (1, 10, 2)
+            # Ordenação numérica correta do ID
             disp = df_atual[df_atual['Status'] == 'Disponível'].copy()
             disp['ID_NUM'] = pd.to_numeric(disp['ID'], errors='coerce')
             disp = disp.sort_values(by='ID_NUM')
@@ -258,7 +272,7 @@ with tab_sai:
         if limite_saida > 0:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
             
-            # CORREÇÃO: Cria coluna temporária numérica para saída sequencial correta
+            # Ordenação numérica correta do ID
             alvos = df_atual[df_atual['Status'].isin(filtro)].copy()
             alvos['ID_NUM'] = pd.to_numeric(alvos['ID'], errors='coerce')
             alvos = alvos.sort_values(by='ID_NUM')
