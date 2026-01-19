@@ -160,4 +160,51 @@ with tab2:
             salvar_dados(); st.rerun()
 
 with tab3:
-    qtd_out = st.number_input("Qtd
+    qtd_out = st.number_input("Qtd Retirar", 1, int(cap_rua))
+    modo_saida = st.radio("Regra de Saída:", ["Somente Reservados", "Saída Direta (Ajuste)"], horizontal=True)
+    if st.button("⚪ Confirmar Saída"):
+        filtro = ['Reservado'] if modo_saida == "Somente Reservados" else ['Disponível', 'Reservado']
+        alvos = st.session_state.estoque[(st.session_state.estoque['Rua'] == rua_sel) & (st.session_state.estoque['Status'].isin(filtro))].sort_values(by='ID')
+        if not alvos.empty:
+            for i in range(min(int(qtd_out), len(alvos))):
+                idx = alvos.index[i]
+                st.session_state.estoque.loc[idx, ['Lote', 'Status', 'Validade', 'Cliente', 'Data_Entrada']] = ["", "Vazio", None, "", None]
+            salvar_dados(); st.rerun()
+        else: st.error("Nenhum pallet compatível para retirada!")
+
+# --- LÓGICA DO MAPA E ALERTA AZUL ---
+
+df_mapa = st.session_state.estoque[st.session_state.estoque['Rua'] == rua_sel].copy()
+df_mapa['Visual'] = df_mapa['Status']
+df_ordem = df_mapa[df_mapa['ID'] != '--'].sort_values(by='ID')
+lote_ant = None
+for idx, row in df_ordem.iterrows():
+    if row['Status'] != 'Vazio':
+        if lote_ant is not None and row['Lote'] != lote_ant:
+            df_mapa.at[idx, 'Visual'] = 'TROCA'
+        lote_ant = row['Lote']
+
+df_mapa['Texto'] = df_mapa.apply(lambda r: f"P:{r['ID']}\n{str(r['Lote'])}\n{str(r['Cliente'])[:8]}" if r['Status'] not in ["Vazio", "BLOQUEADO"] else f"P:{r['ID']}" if r['Status'] == "Vazio" else "---", axis=1)
+mapa_t = df_mapa.pivot(index='Nivel', columns='Fileira', values='Texto')
+mapa_v = df_mapa.pivot(index='Nivel', columns='Fileira', values='Visual')
+
+def style_fn(x):
+    style_df = pd.DataFrame('', index=x.index, columns=x.columns)
+    for r in x.index:
+        for c in x.columns:
+            v = mapa_v.loc[r, c]
+            if v == "TROCA": color = 'background-color: #007bff; color: white; border: 3px solid white' 
+            elif v == "Disponível": color = 'background-color: #28a745; color: white' 
+            elif v == "Reservado": color = 'background-color: #fd7e14; color: white' 
+            elif v == "Vazio": color = 'background-color: #ffffff; color: #444; border: 1px solid #ddd' 
+            else: color = 'background-color: #111; color: #333' 
+            style_df.loc[r, c] = f'{color}; font-size: 10px; font-weight: bold; text-align: center; height: 80px; min-width: 110px; white-space: pre-wrap;'
+    return style_df
+
+st.subheader(f"🗺️ Mapa: {rua_sel} (Capacidade: {cap_rua})")
+st.table(mapa_t[sorted(mapa_t.columns, reverse=True)].sort_index(ascending=False).style.apply(style_fn, axis=None))
+
+# --- LISTAGEM DETALHADA ---
+st.subheader("📋 Detalhamento de Conferência")
+df_conf = df_mapa[df_mapa['Status'] != "Vazio"].sort_values(by='ID')[['ID', 'Lote', 'Validade', 'Status', 'Cliente', 'Data_Entrada']]
+st.dataframe(df_conf, use_container_width=True, hide_index=True)
