@@ -12,7 +12,7 @@ except ImportError:
     GSHEETS_DISPONIVEL = False
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(layout="wide", page_title="Logística Pro - Autosave", page_icon="🚜")
+st.set_page_config(layout="wide", page_title="Logística Pro - Master", page_icon="🚜")
 
 # --- CSS ---
 st.markdown("""
@@ -96,11 +96,13 @@ if 'estoque' not in st.session_state:
 def inicializar_rua(nome_rua, capacidade, altura_max):
     dados = []
     
+    # Gera posições FÍSICAS: Do chão para cima, Fileira por Fileira
     posicoes_possiveis = []
     for f in range(1, 15):
         for n in range(1, altura_max + 1):
             posicoes_possiveis.append((f, n))
             
+    # Aplica a CAPACIDADE: Pega os primeiros X slots da lista gerada acima
     posicoes_validas = posicoes_possiveis[:capacidade]
 
     for f in range(1, 15):
@@ -108,8 +110,10 @@ def inicializar_rua(nome_rua, capacidade, altura_max):
             status = "Vazio"
             id_p = "--"
             
+            # Verifica se o nível existe na altura configurada
             if n <= altura_max:
                 if (f, n) in posicoes_validas:
+                    # ID 01 é o primeiro item da lista (F1 N1)
                     idx_num = posicoes_validas.index((f, n)) + 1
                     id_p = f"{idx_num:02d}"
                 else:
@@ -212,8 +216,16 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
-            # Fileira DESCENDENTE (Preenche do Fundo)
-            vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[False, True])
+            # Preenche do FUNDO (Fileira maior) para a FRENTE, mas respeitando Nível (Chão primeiro)
+            # Para preencher 1, 2, 3... usamos a ordem ascendente dos IDs que geramos
+            # Como ID 01 está na Fileira 1 Nível 1, e ID 41 na Fileira 14...
+            # A lógica de "vagas" deve pegar do menor ID vazio para o maior.
+            
+            # Cria coluna numérica temporária para ordenar as vagas corretamente pelo ID (01, 02...)
+            vagas = df_atual[df_atual['Status'] == 'Vazio'].copy()
+            vagas['ID_NUM'] = pd.to_numeric(vagas['ID'], errors='coerce')
+            vagas = vagas.sort_values(by='ID_NUM') # Preenche 1, 2, 3...
+            
             agora = datetime.now().strftime("%d/%m %H:%M")
             for i in range(int(qtd_in)):
                 idx = vagas.index[i]
@@ -264,6 +276,7 @@ with tab_sai:
     if st.button("⚪ Confirmar Saída"):
         if limite_saida > 0:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
+            
             alvos = df_atual[df_atual['Status'].isin(filtro)].copy()
             alvos['ID_NUM'] = pd.to_numeric(alvos['ID'], errors='coerce')
             alvos = alvos.sort_values(by='ID_NUM')
@@ -281,8 +294,8 @@ st.subheader("🗺️ Mapa Visual")
 df_mapa = df_atual.copy()
 if not df_mapa.empty:
     df_mapa['ID'] = df_mapa['ID'].astype(str)
-    # Aqui inicializa o visual com o Status real (Reservado já nasce Reservado)
-    df_mapa['Visual'] = df_mapa['Status']
+    # Inicializa coluna Visual e verifica RESERVA PRIORITÁRIA
+    df_mapa['Visual'] = df_mapa['Status'] 
     df_mapa['Aura_FEFO'] = False
     hoje = date.today()
 
@@ -291,14 +304,19 @@ if not df_mapa.empty:
     
     lote_ant = None
     for idx, row in df_ordem.iterrows():
+        # Só processa visual se não for vazio
         if row['Status'] in ["Disponível", "Reservado"]:
+            
+            # Lógica 1: Aura Amarela (Validade)
             if row['Validade'] and (row['Validade'] - hoje).days <= 180: 
                 df_mapa.at[idx, 'Aura_FEFO'] = True
             
-            # --- CORREÇÃO DEFINITIVA ---
-            if lote_ant is not None and row['Lote'] != lote_ant:
-                # SE FOR RESERVADO, NÃO TOCA NA COR!
-                if row['Status'] == 'Disponível':
+            # Lógica 2: Troca de Lote (Azul)
+            # AQUI ESTÁ A CORREÇÃO:
+            # Se mudou de lote E o status atual NÃO É RESERVADO -> Azul
+            # Se for Reservado, ele MANTÉM o status 'Reservado' (que vira Laranja no style_fn)
+            if lote_ant is not None and row['Lote'] != lote_ant: 
+                if row['Status'] != 'Reservado':
                     df_mapa.at[idx, 'Visual'] = 'TROCA'
             
             lote_ant = row['Lote']
@@ -316,8 +334,8 @@ if not df_mapa.empty:
                 fefo = mapa_fefo.loc[r, c]
                 borda = "border: 4px solid #FFFF00; box-shadow: inset 0 0 10px #FFFF00;" if fefo else "border: 1px solid #dee2e6;"
                 
-                # Hierarquia de Cores
-                if v == "Reservado": color = 'background-color: #fd7e14; color: white;' # Laranja (Priority)
+                # HIERARQUIA VISUAL FINAL
+                if v == "Reservado": color = 'background-color: #fd7e14; color: white;' # Laranja (Ganhou!)
                 elif v == "TROCA": color = 'background-color: #007bff; color: white;'   # Azul
                 elif v == "Disponível": color = 'background-color: #28a745; color: white;' # Verde
                 elif v == "Vazio": color = 'background-color: #e9ecef; color: #333;' 
@@ -326,6 +344,7 @@ if not df_mapa.empty:
                 style_df.loc[r, c] = f'{color} {borda} font-size: 10px; font-weight: bold; text-align: center; height: 85px; min-width: 105px; white-space: pre-wrap; border-radius: 8px;'
         return style_df
 
+    # Visual com Fileira Maior na Esquerda (Visão de Corredor)
     st.table(mapa_t[sorted(mapa_t.columns, reverse=True)].sort_index(ascending=False).style.apply(style_fn, axis=None))
 
 # --- TABELA DETALHADA ---
