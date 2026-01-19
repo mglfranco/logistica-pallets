@@ -82,6 +82,7 @@ for letra in string.ascii_uppercase:
 st.title("🚜 Gestão Logística - Monitoramento FEFO 🚜")
 
 with st.sidebar:
+    conn = st.connection("gsheets", type=GSheetsConnection)
     st.header("⚙️ Configurações")
     st.session_state.cap_total_galpao = st.number_input("Capacidade Galpão", 1, 100000, st.session_state.cap_total_galpao)
     st.session_state.capacidade_padrao = st.number_input("Padrão p/ Novas Ruas", 1, 41, st.session_state.capacidade_padrao)
@@ -213,3 +214,4 @@ st.subheader("📋 Detalhamento (Sequência de Saída)")
 df_conf = df_mapa[df_mapa['Status'] != "Vazio"].sort_values(by='ID').copy()
 df_conf['FEFO'] = df_conf['Aura_FEFO'].apply(lambda x: "⚠️ ALERTA 6 MESES" if x else "✅ OK")
 st.dataframe(df_conf[['ID', 'Lote', 'Validade', 'Status', 'Cliente', 'FEFO']], use_container_width=True, hide_index=True)
+
