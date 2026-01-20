@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 import string
 import time
+import plotly.graph_objects as go  # <--- IMPORTAÇÃO ADICIONADA
 
 # --- TENTA IMPORTAR A CONEXÃO COM GOOGLE SHEETS ---
 try:
@@ -231,12 +232,7 @@ with tab_ent:
     if st.button("📥 Confirmar Entrada", type="primary"):
         if qtd_vazio < qtd_in: st.error("Cheio!")
         else:
-            # CORREÇÃO AQUI: 
-            # Fileira: DESCENDING (False) -> Maior para Menor (14, 13, 12...)
-            # Nivel: ASCENDING (True) -> Menor para Maior (1, 2, 3)
-            # Resultado: Começa no Fundo, Chão.
             vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[False, True])
-            
             agora = datetime.now().strftime("%d/%m %H:%M")
             for i in range(int(qtd_in)):
                 idx = vagas.index[i]
@@ -255,11 +251,9 @@ with tab_res:
     if st.button("🟠 Reservar"):
         if not cli_res: st.warning("Digite o cliente")
         else:
-            # RESERVA: Começa pelo ID 01 (Topo da Frente)
             disp = df_atual[df_atual['Status'] == 'Disponível'].copy()
             disp['ID_NUM'] = pd.to_numeric(disp['ID'], errors='coerce')
             disp = disp.sort_values(by='ID_NUM', ascending=True)
-            
             for i in range(int(qtd_res_in)):
                 idx = disp.index[i]
                 st.session_state.estoque.at[idx, 'Status'] = 'Reservado'
@@ -288,12 +282,9 @@ with tab_sai:
     if st.button("⚪ Confirmar Saída"):
         if limite_saida > 0:
             filtro = ['Reservado'] if modo == "Somente Reservados" else ['Disponível', 'Reservado']
-            
-            # SAÍDA: Começa pelo ID 01 (Topo da Frente)
             alvos = df_atual[df_atual['Status'].isin(filtro)].copy()
             alvos['ID_NUM'] = pd.to_numeric(alvos['ID'], errors='coerce')
             alvos = alvos.sort_values(by='ID_NUM', ascending=True)
-            
             if len(alvos) >= qtd_out:
                 for i in range(int(qtd_out)):
                     idx = alvos.index[i]
@@ -301,11 +292,14 @@ with tab_sai:
                 salvar_dados()
                 st.rerun()
 
-# --- MAPA VISUAL ---
+# --- MAPA VISUAL 3D (PLOTLY) ---
 st.divider()
-st.subheader("🗺️ Mapa Visual")
+st.subheader("🗺️ Visualização 3D da Rua")
+
 df_mapa = df_atual.copy()
+
 if not df_mapa.empty:
+    # 1. Preparação dos dados
     df_mapa['ID'] = df_mapa['ID'].astype(str)
     df_mapa['Visual'] = df_mapa['Status'] 
     df_mapa['Aura_FEFO'] = False
@@ -314,42 +308,81 @@ if not df_mapa.empty:
     df_mapa['ID_NUM'] = pd.to_numeric(df_mapa['ID'], errors='coerce')
     df_ordem = df_mapa[df_mapa['ID'] != '--'].sort_values(by='ID_NUM')
     
+    # Lógica de Troca de Lote (Mesma lógica anterior)
     lote_ant = None
     for idx, row in df_ordem.iterrows():
         if row['Status'] in ["Disponível", "Reservado"]:
-            
             if row['Validade'] and (row['Validade'] - hoje).days <= 180: 
                 df_mapa.at[idx, 'Aura_FEFO'] = True
             
             if lote_ant is not None and row['Lote'] != lote_ant: 
                 if row['Status'] != 'Reservado':
                     df_mapa.at[idx, 'Visual'] = 'TROCA'
-            
             lote_ant = row['Lote']
 
-    df_mapa['Texto'] = df_mapa.apply(lambda r: f"P:{r['ID']}\n{str(r['Lote'])}\n{str(r['Cliente'])[:8]}" if r['Status'] not in ["Vazio", "BLOQUEADO"] else f"P:{r['ID']}" if r['Status'] == "Vazio" else "---", axis=1)
-    mapa_t = df_mapa.pivot(index='Nivel', columns='Fileira', values='Texto')
-    mapa_v = df_mapa.pivot(index='Nivel', columns='Fileira', values='Visual')
-    mapa_fefo = df_mapa.pivot(index='Nivel', columns='Fileira', values='Aura_FEFO')
+    # 2. Definição de Cores e Estilos
+    colors = {
+        'Vazio': '#e9ecef',        # Cinza claro
+        'Disponível': '#28a745',   # Verde
+        'Reservado': '#fd7e14',    # Laranja
+        'TROCA': '#007bff'         # Azul
+    }
+    
+    # 3. Construção do Gráfico 3D
+    fig = go.Figure()
 
-    def style_fn(x):
-        style_df = pd.DataFrame('', index=x.index, columns=x.columns)
-        for r in x.index:
-            for c in x.columns:
-                v = mapa_v.loc[r, c]
-                fefo = mapa_fefo.loc[r, c]
-                borda = "border: 4px solid #FFFF00; box-shadow: inset 0 0 10px #FFFF00;" if fefo else "border: 1px solid #dee2e6;"
-                
-                if v == "Reservado": color = 'background-color: #fd7e14; color: white;' 
-                elif v == "TROCA": color = 'background-color: #007bff; color: white;' 
-                elif v == "Disponível": color = 'background-color: #28a745; color: white;' 
-                elif v == "Vazio": color = 'background-color: #e9ecef; color: #333;' 
-                else: color = 'background-color: transparent; color: transparent; border: none;' 
-                
-                style_df.loc[r, c] = f'{color} {borda} font-size: 10px; font-weight: bold; text-align: center; height: 85px; min-width: 105px; white-space: pre-wrap; border-radius: 8px;'
-        return style_df
+    # Criamos um "Trace" para cada status para que a legenda funcione automaticamente
+    for status in ['Vazio', 'Disponível', 'Reservado', 'TROCA']:
+        d = df_mapa[(df_mapa['Visual'] == status) & (df_mapa['Visual'] != "BLOQUEADO")]
+        
+        if d.empty: continue
+        
+        # Cria o texto de hover customizado
+        hover_text = []
+        for _, r in d.iterrows():
+            aviso_fefo = "⚠️ VENCENDO<br>" if r['Aura_FEFO'] else ""
+            txt = (f"<b>ID:</b> {r['ID']}<br>"
+                   f"{aviso_fefo}"
+                   f"<b>Lote:</b> {r['Lote']}<br>"
+                   f"<b>Cliente:</b> {r['Cliente']}<br>"
+                   f"<b>Validade:</b> {r['Validade']}")
+            hover_text.append(txt)
 
-    st.table(mapa_t[sorted(mapa_t.columns, reverse=True)].sort_index(ascending=False).style.apply(style_fn, axis=None))
+        fig.add_trace(go.Scatter3d(
+            x=d['Fileira'],
+            y=[1] * len(d), # Profundidade fixa (faz parecer um paredão)
+            z=d['Nivel'],
+            mode='markers+text',
+            name=status,
+            text=[str(i) for i in d['ID']], # Texto que aparece DENTRO do cubo
+            hovertext=hover_text,
+            hoverinfo="text",
+            marker=dict(
+                size=25, # Tamanho do cubo
+                symbol='square', # Formato quadrado
+                color=colors.get(status, 'grey'),
+                line=dict(width=2, color='DarkSlateGrey'), # Borda do cubo
+                opacity=1.0
+            ),
+            textfont=dict(color='black' if status == 'Vazio' else 'white', size=10)
+        ))
+
+    # 4. Ajustes do Layout da Cena (Câmera e Eixos)
+    fig.update_layout(
+        scene=dict(
+            xaxis=dict(title='Fileira', tickmode='linear', dtick=1, showgrid=False),
+            yaxis=dict(title='', showticklabels=False, showgrid=False, range=[0, 2]), # Esconde eixo Y
+            zaxis=dict(title='Nível', tickmode='linear', dtick=1, showgrid=False),
+            aspectmode='data', # Mantém proporção real (não estica)
+            bgcolor="rgba(0,0,0,0)" # Fundo transparente
+        ),
+        margin=dict(l=0, r=0, b=0, t=0), # Margens zero
+        height=500, # Altura do painel
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
 
 # --- TABELA DETALHADA ---
 st.divider()
