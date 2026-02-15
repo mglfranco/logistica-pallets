@@ -4,13 +4,13 @@ from datetime import datetime, date, timedelta
 import string
 import time
 import io # Import para criar o arquivo Excel na memória
+import json
+import os
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Logística Pro - Master", page_icon="🚜")
 
-# --- BANCO DE DADOS DE PRODUTOS (Extraído das Imagens) ---
-# Formato: SKU: {'nome': '', 'camadas': 0, 'lastro': 0, 'total': 0}
-# Lastro = Quantidade por camada
+# --- BANCO DE DADOS DE PRODUTOS ---
 DB_PRODUTOS = {
     # IMAGEM 1
     "10033": {"nome": "OPA PILSEN 350ML", "camadas": 13, "lastro": 22, "total": 286},
@@ -205,101 +205,143 @@ except Exception:
 # --- FUNÇÕES DE BANCO DE DADOS ---
 def salvar_dados():
     """Salva os dados no Session State e no Google Sheets se disponível."""
-    if not GSHEETS_DISPONIVEL:
-        st.toast("Salvo localmente (Sessão)", icon="💾")
-        return
+    # 1. TENTA SALVAR NO GOOGLE SHEETS SE DISPONIVEL
+    if GSHEETS_DISPONIVEL:
+        try:
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            with st.spinner('Sincronizando com a nuvem...'):
+                df_estoque = st.session_state.estoque.copy()
+                if 'Validade' in df_estoque.columns:
+                    df_estoque['Validade'] = df_estoque['Validade'].astype(str)
+                conn.update(worksheet="Estoque", data=df_estoque)
+                
+                dados_config = []
+                for (g, r), v in st.session_state.config_ruas.items():
+                    dados_config.append({
+                        'Galpao': g, 'Rua': r,
+                        'Capacidade': v.get('cap', 41), 'Altura': v.get('alt', 3)
+                    })
+                conn.update(worksheet="Config_Ruas", data=pd.DataFrame(dados_config))
+                
+                str_galpoes = ",".join(st.session_state.lista_galpoes)
+                df_g = pd.DataFrame([{"cap_galpao": st.session_state.cap_total_galpao, "lista_galpoes": str_galpoes}])
+                conn.update(worksheet="Config_Global", data=df_g)
+                st.cache_data.clear()
+            st.toast("Salvo na nuvem!", icon="☁️")
+            return # Se salvou na nuvem com sucesso, retorna
+        except Exception as e:
+            st.error(f"Erro no GSheets. Tentando salvar localmente. Erro: {e}")
 
+    # 2. SALVAMENTO LOCAL (BACKUP OU OFFLINE)
     try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        
-        with st.spinner('Sincronizando com a nuvem...'):
-            df_estoque = st.session_state.estoque.copy()
-            # Converte datas para string
-            if 'Validade' in df_estoque.columns:
-                df_estoque['Validade'] = df_estoque['Validade'].astype(str)
-            
-            conn.update(worksheet="Estoque", data=df_estoque)
-            
-            # Salva Config Ruas (AGORA COM CHAVE COMPOSTA)
-            dados_config = []
-            for (g, r), v in st.session_state.config_ruas.items():
-                dados_config.append({
-                    'Galpao': g,
-                    'Rua': r,
-                    'Capacidade': v.get('cap', 41),
-                    'Altura': v.get('alt', 3)
-                })
-            
-            df_cfg = pd.DataFrame(dados_config)
-            conn.update(worksheet="Config_Ruas", data=df_cfg)
-            
-            # Salva Config Global e Lista de Galpões
-            str_galpoes = ",".join(st.session_state.lista_galpoes)
-            df_g = pd.DataFrame([{"cap_galpao": st.session_state.cap_total_galpao, "lista_galpoes": str_galpoes}])
-            conn.update(worksheet="Config_Global", data=df_g)
-            
-            st.cache_data.clear()
-        st.toast("Salvo na nuvem!", icon="☁️")
+        st.session_state.estoque.to_csv("dados_estoque.csv", index=False)
+        config_ruas_save = {f"{k[0]}|{k[1]}": v for k, v in st.session_state.config_ruas.items()}
+        with open("dados_config_ruas.json", "w") as f:
+            json.dump(config_ruas_save, f)
+        config_global = {
+            "cap_total_galpao": st.session_state.cap_total_galpao,
+            "lista_galpoes": st.session_state.lista_galpoes
+        }
+        with open("dados_global.json", "w") as f:
+            json.dump(config_global, f)
+        st.toast("Salvo localmente (Arquivo)", icon="💾")
     except Exception as e:
-        st.error(f"Erro ao Salvar na Nuvem (Usando modo local): {e}")
+        st.error(f"Erro ao salvar localmente: {e}")
 
 def carregar_dados():
-    """Carrega dados do GSheets ou inicia vazios."""
-    if not GSHEETS_DISPONIVEL:
-        return 
-        
-    try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        
-        # Carrega Estoque
+    """Carrega dados do GSheets ou Local."""
+    # 1. TENTA CARREGAR DO GOOGLE SHEETS
+    if GSHEETS_DISPONIVEL:
         try:
+            conn = st.connection("gsheets", type=GSheetsConnection)
             df_e = conn.read(worksheet="Estoque", ttl=0)
             if df_e is not None and not df_e.empty:
                 df_e['Validade'] = pd.to_datetime(df_e['Validade'], errors='coerce').dt.date
                 df_e['ID'] = df_e['ID'].astype(str)
                 df_e['Lote'] = df_e['Lote'].fillna("").astype(str)
                 df_e['Cliente'] = df_e['Cliente'].fillna("").astype(str)
-                # Novas Colunas
                 if 'Produto' not in df_e.columns: df_e['Produto'] = ""
                 if 'Qtd_Itens' not in df_e.columns: df_e['Qtd_Itens'] = 0
                 if 'Galpao' not in df_e.columns: df_e['Galpao'] = "Principal"
-                
                 df_e['Produto'] = df_e['Produto'].fillna("").astype(str)
                 df_e['Qtd_Itens'] = pd.to_numeric(df_e['Qtd_Itens'], errors='coerce').fillna(0).astype(int)
-                
                 st.session_state.estoque = df_e
-        except Exception:
-            pass
 
-        # Carrega Config Ruas (COM CHAVE COMPOSTA)
-        try:
             df_c = conn.read(worksheet="Config_Ruas", ttl=0)
             if df_c is not None and not df_c.empty:
                 st.session_state.config_ruas = {} 
                 for _, row in df_c.iterrows():
-                    # Chave composta: (Galpao, Rua)
                     chave = (row.get('Galpao', 'Principal'), row['Rua'])
                     st.session_state.config_ruas[chave] = {
                         'cap': int(row.get('Capacidade', 41)), 
                         'alt': int(row.get('Altura', 3)),
                         'galpao': row.get('Galpao', 'Principal')
                     }
-        except Exception:
-            pass
-
-        # Carrega Config Global
-        try:
+            
             df_g = conn.read(worksheet="Config_Global", ttl=0)
             if df_g is not None and not df_g.empty:
                 st.session_state.cap_total_galpao = int(df_g.iloc[0]['cap_galpao'])
                 if 'lista_galpoes' in df_g.columns:
                     galpoes_str = str(df_g.iloc[0]['lista_galpoes'])
                     st.session_state.lista_galpoes = [g.strip() for g in galpoes_str.split(",") if g.strip()]
+            return # Sucesso no carregamento da nuvem
         except Exception:
-            pass
+            pass # Falha na nuvem, tenta local
 
-    except Exception:
-        time.sleep(0.5)
+    # 2. CARREGAMENTO LOCAL (SE FALHAR NUVEM OU OFFLINE)
+    if os.path.exists("dados_estoque.csv"):
+        try:
+            df = pd.read_csv("dados_estoque.csv")
+            if 'Validade' in df.columns:
+                df['Validade'] = pd.to_datetime(df['Validade'], errors='coerce').dt.date
+            df['ID'] = df['ID'].astype(str)
+            df['Lote'] = df['Lote'].fillna("").astype(str)
+            df['Cliente'] = df['Cliente'].fillna("").astype(str)
+            df['Produto'] = df['Produto'].fillna("").astype(str)
+            st.session_state.estoque = df
+        except: pass
+        
+    if os.path.exists("dados_config_ruas.json"):
+        try:
+            with open("dados_config_ruas.json", "r") as f:
+                data = json.load(f)
+                st.session_state.config_ruas = {}
+                for k, v in data.items():
+                    parts = k.split("|")
+                    if len(parts) == 2:
+                        st.session_state.config_ruas[(parts[0], parts[1])] = v
+        except: pass
+
+    if os.path.exists("dados_global.json"):
+        try:
+            with open("dados_global.json", "r") as f:
+                data = json.load(f)
+                st.session_state.cap_total_galpao = data.get("cap_total_galpao", 2000)
+                st.session_state.lista_galpoes = data.get("lista_galpoes", ["Principal"])
+        except: pass
+
+# --- FUNÇÃO PARA GERAR EXCEL (USADA NO BOTÃO) ---
+def gerar_excel_bytes():
+    if st.session_state.estoque.empty:
+        return None
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        # Aba 1: Resumo
+        df_resumo = st.session_state.estoque[st.session_state.estoque['Status'] != 'Vazio'].groupby(
+            ['Galpao', 'Produto']
+        ).agg(
+            Total_Pallets=('ID', 'count'),
+            Total_Itens=('Qtd_Itens', 'sum')
+        ).reset_index()
+        df_resumo.to_excel(writer, sheet_name='Resumo', index=False)
+        
+        # Aba 2: Detalhado
+        df_detalhe = st.session_state.estoque[st.session_state.estoque['Status'] != 'Vazio'].copy()
+        if not df_detalhe.empty:
+            colunas_export = ['Galpao', 'Rua', 'ID', 'Produto', 'Lote', 'Qtd_Itens', 'Validade', 'Status', 'Cliente', 'Data_Entrada']
+            colunas_existentes = [c for c in colunas_export if c in df_detalhe.columns]
+            df_detalhe[colunas_existentes].to_excel(writer, sheet_name='Detalhado', index=False)
+    return buffer
 
 # --- INICIALIZAÇÃO DO ESTADO ---
 if 'estoque' not in st.session_state:
@@ -349,14 +391,11 @@ def inicializar_rua(nome_galpao, nome_rua, capacidade, altura_max):
     
     df_nova = pd.DataFrame(dados)
     
-    # Remove dados antigos dessa rua/galpão
     if not st.session_state.estoque.empty:
         mask = (st.session_state.estoque['Rua'] == nome_rua) & (st.session_state.estoque['Galpao'] == nome_galpao)
         st.session_state.estoque = st.session_state.estoque[~mask]
     
     st.session_state.estoque = pd.concat([st.session_state.estoque, df_nova], ignore_index=True)
-    
-    # SALVA A CONFIGURAÇÃO USANDO CHAVE COMPOSTA (GALPAO, RUA)
     chave_config = (nome_galpao, nome_rua)
     st.session_state.config_ruas[chave_config] = {'cap': capacidade, 'alt': altura_max, 'galpao': nome_galpao}
     salvar_dados()
@@ -364,7 +403,23 @@ def inicializar_rua(nome_galpao, nome_rua, capacidade, altura_max):
 # --- SIDEBAR (CONTROLES) ---
 with st.sidebar:
     st.title("⚙️ Painel de Controle")
-    st.info(f"Modo: {'☁️ Online' if GSHEETS_DISPONIVEL else '💻 Local'}")
+    st.info(f"Modo: {'☁️ Online (Google Sheets)' if GSHEETS_DISPONIVEL else '💻 Local (Offline)'}")
+
+    # --- BOTÃO DE EXPORTAR EXCEL NA SIDEBAR ---
+    st.divider()
+    st.header("📂 Exportar Dados")
+    excel_buffer = gerar_excel_bytes()
+    if excel_buffer:
+        st.download_button(
+            label="📥 Baixar Excel Completo",
+            data=excel_buffer,
+            file_name=f"logistica_estoque_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.ms-excel",
+            use_container_width=True
+        )
+    else:
+        st.warning("Estoque vazio.")
+    st.divider()
 
     # 1. Seleção de Galpão
     st.header("🏢 Galpão")
@@ -390,19 +445,14 @@ with st.sidebar:
 
     # 2. Seleção de Rua (Filtrada pelo Galpão)
     st.header("📍 Rua")
-    # Gera lista padrão A1..Z2
     lista_padrao = [f"Rua {l}{n}" for l in string.ascii_uppercase for n in [1, 2]]
-    
-    # Se quiser ruas personalizadas, poderia adicionar aqui, mas vamos usar a padrao + filtro
     rua_sel = st.selectbox("Selecione a Rua", lista_padrao)
     
-    # Verifica se rua existe neste galpão, senão cria
     mask_rua = (st.session_state.estoque['Galpao'] == galpao_sel) & (st.session_state.estoque['Rua'] == rua_sel)
     if st.session_state.estoque[mask_rua].empty:
         inicializar_rua(galpao_sel, rua_sel, 41, 3)
 
     with st.expander("🏗️ Configurar Rua"):
-        # BUSCA CONFIGURAÇÃO ESPECÍFICA DO GALPÃO ATUAL
         chave_busca = (galpao_sel, rua_sel)
         cfg_atual = st.session_state.config_ruas.get(chave_busca, {'cap': 41, 'alt': 3})
         
@@ -415,7 +465,7 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
-    if st.button("💾 Salvar Dados"):
+    if st.button("💾 Forçar Salvamento"):
         salvar_dados()
 
 # --- ÁREA PRINCIPAL ---
@@ -425,7 +475,7 @@ st.title(f"🚜 {galpao_sel} > {rua_sel}")
 mask_atual = (st.session_state.estoque['Galpao'] == galpao_sel) & (st.session_state.estoque['Rua'] == rua_sel)
 df_atual = st.session_state.estoque[mask_atual].copy()
 
-# Busca Capacidade (USANDO CHAVE COMPOSTA)
+# Busca Capacidade
 chave_busca_main = (galpao_sel, rua_sel)
 cap_rua = st.session_state.config_ruas.get(chave_busca_main, {}).get('cap', 41)
 
@@ -452,11 +502,9 @@ with tab_ent:
     c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
     
     with c1:
-        # Cria lista de opções combinando SKU e Nome para busca fácil
         opcoes_produtos = [""] + [f"{sku} - {dados['nome']}" for sku, dados in DB_PRODUTOS.items()]
         prod_selecionado = st.selectbox("🍺 Selecione o Produto (Busca por SKU ou Nome)", opcoes_produtos)
         
-        # Lógica de autopreenchimento
         nome_auto = ""
         qtd_padrao = 0
         desc_config = "Selecione um produto"
@@ -469,15 +517,11 @@ with tab_ent:
                 qtd_padrao = dados_prod['total']
                 desc_config = f"Padrão: {dados_prod['camadas']} camadas x {dados_prod['lastro']} = {dados_prod['total']} fardos/cx"
     
-    # Campos editáveis (caso o pallet esteja quebrado ou diferente do padrão)
-    with c2: 
-        lote_in = st.text_input("📦 Lote")
+    with c2: lote_in = st.text_input("📦 Lote")
     with c3: 
-        # Usa o valor do banco como padrão, mas permite edição
         qtd_itens_in = st.number_input("🔢 Fardos/Pallet", 0, 5000, int(qtd_padrao), help=desc_config)
         st.caption(desc_config)
-    with c4: 
-        qtd_pallets_in = st.number_input("🔢 Qtd Pallets", 1, max(1, qtd_vazio), 1)
+    with c4: qtd_pallets_in = st.number_input("🔢 Qtd Pallets", 1, max(1, qtd_vazio), 1)
     
     val_in = st.date_input("📅 Validade")
     
@@ -487,13 +531,9 @@ with tab_ent:
         elif qtd_vazio < qtd_pallets_in:
             st.error(f"Espaço insuficiente! Vagas: {qtd_vazio}")
         else:
-            # Lógica: Preenche do fundo (fileira alta) para frente
             vagas = df_atual[df_atual['Status'] == 'Vazio'].sort_values(by=['Fileira', 'Nivel'], ascending=[False, True])
             indices = vagas.index[:int(qtd_pallets_in)]
-            
             agora = datetime.now().strftime("%Y-%m-%d %H:%M")
-            
-            # Como df_atual é um slice, precisamos atualizar no dataframe original usando o índice
             idx_global = df_atual.loc[indices].index
             
             st.session_state.estoque.loc[idx_global, 'Lote'] = str(lote_in)
@@ -515,7 +555,6 @@ with tab_res:
     if st.button("🟠 Reservar"):
         if cli_res:
             disp = df_atual[df_atual['Status'] == 'Disponível'].copy()
-            # Ordena ID crescente (Frente -> Fundo)
             disp['ID_N'] = pd.to_numeric(disp['ID'], errors='coerce')
             disp = disp.sort_values('ID_N')
             
@@ -531,12 +570,10 @@ with tab_edit:
     st.info("Modifique a quantidade de itens em um pallet específico (Picagem).")
     col_e1, col_e2 = st.columns([1, 2])
     with col_e1:
-        # Lista IDs ocupados na rua atual
         ids_ocupados = df_atual[df_atual['Status'].isin(['Disponível', 'Reservado'])]['ID'].unique()
         id_edit = st.selectbox("Selecione o ID do Pallet", sorted(ids_ocupados))
     
     if id_edit:
-        # Pega dados atuais
         linha_edit = df_atual[df_atual['ID'] == id_edit].iloc[0]
         idx_global_edit = linha_edit.name
         
@@ -569,7 +606,6 @@ with tab_sai:
             indices = alvos.index[:int(qtd_out)]
             idx_global = df_atual.loc[indices].index
             
-            # Limpa
             cols_limpar = ['Lote', 'Status', 'Validade', 'Cliente', 'Data_Entrada', 'Produto', 'Qtd_Itens']
             st.session_state.estoque.loc[idx_global, cols_limpar] = ["", "Vazio", None, "", None, "", 0]
             
@@ -579,42 +615,6 @@ with tab_sai:
 with tab_rel:
     st.subheader("📊 Relatórios e Pesquisa")
     
-    # --- EXPORTAÇÃO EXCEL ---
-    st.markdown("### 📤 Exportar Dados para Excel")
-    
-    if st.button("Gerar Arquivo Excel"):
-        if not st.session_state.estoque.empty:
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                # Aba 1: Resumo
-                df_resumo = st.session_state.estoque[st.session_state.estoque['Status'] != 'Vazio'].groupby(
-                    ['Galpao', 'Produto']
-                ).agg(
-                    Total_Pallets=('ID', 'count'),
-                    Total_Itens=('Qtd_Itens', 'sum')
-                ).reset_index()
-                df_resumo.to_excel(writer, sheet_name='Resumo', index=False)
-                
-                # Aba 2: Detalhado (Raw Data)
-                df_detalhe = st.session_state.estoque[st.session_state.estoque['Status'] != 'Vazio'].copy()
-                if not df_detalhe.empty:
-                    # Organiza colunas
-                    colunas_export = ['Galpao', 'Rua', 'ID', 'Produto', 'Lote', 'Qtd_Itens', 'Validade', 'Status', 'Cliente', 'Data_Entrada']
-                    # Garante que só exporta colunas que existem
-                    colunas_existentes = [c for c in colunas_export if c in df_detalhe.columns]
-                    df_detalhe[colunas_existentes].to_excel(writer, sheet_name='Detalhado', index=False)
-            
-            st.download_button(
-                label="📥 Baixar Planilha (.xlsx)",
-                data=buffer,
-                file_name=f"estoque_logistica_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.ms-excel"
-            )
-        else:
-            st.warning("O estoque está vazio, nada para exportar.")
-    
-    st.divider()
-
     # Pesquisa Global
     termo = st.text_input("🔎 Pesquisar Produto ou Lote (Em todos os galpões)")
     
@@ -626,7 +626,6 @@ with tab_rel:
         res = st.session_state.estoque[mask_search & (st.session_state.estoque['Status'] != 'Vazio')]
         
         if not res.empty:
-            # Agrupa
             st.markdown(f"### Resultados para '{termo}'")
             total_pallets = len(res)
             total_itens = res['Qtd_Itens'].sum()
@@ -664,14 +663,12 @@ if not df_atual.empty:
     df_mapa = df_atual.copy()
     hoje = date.today()
     
-    # Prepara dados visuais
     def get_cell_style(row):
         status = row['Status']
         prod = row['Produto']
         qtd = row['Qtd_Itens']
         lote = row['Lote']
         
-        # Cor de fundo
         bg = "#f1f2f6"
         color = "#a4b0be"
         border = "1px dashed #ccc"
@@ -679,14 +676,11 @@ if not df_atual.empty:
         if status == "BLOQUEADO":
             bg = "#2f3542"; color = "#57606f"; border = "none"
         elif status != "Vazio":
-            # Cores baseadas no modo
             if modo_vis == "Status (Padrão)":
                 if status == "Reservado": bg = "#ff9f43"
                 else: bg = "#2ecc71"
                 color = "white"
                 border = "1px solid #ddd"
-                
-                # Borda vermelha se vencendo
                 if row['Validade']:
                     try:
                         venc = pd.to_datetime(row['Validade']).date()
@@ -695,19 +689,16 @@ if not df_atual.empty:
                     except: pass
                     
             elif modo_vis == "Idade do Lote (Antigo vs Novo)":
-                # Gradiente Azul. Mais antigo = Azul Escuro. Mais novo = Azul Claro.
                 try:
                     dt_ent = pd.to_datetime(row['Data_Entrada']).date()
                     dias = (hoje - dt_ent).days
-                    # Escala: 0 dias -> Claro, 365 dias -> Escuro
                     intensidade = min(dias * 2, 200) + 50 
-                    bg = f"rgb(0, {255-intensidade}, {255-intensidade/2})" # Gammers blueish
+                    bg = f"rgb(0, {255-intensidade}, {255-intensidade/2})"
                     color = "white"
                     border = "1px solid #fff"
                 except:
                     bg = "#2ecc71"; color="white"
 
-        # Texto
         if status == "Vazio":
             txt = f"🟢 VAZIO\nID:{row['ID']}"
         elif status == "BLOQUEADO":
@@ -722,14 +713,11 @@ if not df_atual.empty:
             border-radius: 6px;
         """, txt
 
-    # Aplica estilos linha a linha
     df_mapa['Style'], df_mapa['Text'] = zip(*df_mapa.apply(get_cell_style, axis=1))
     
-    # Pivots
     mapa_txt = df_mapa.pivot(index='Nivel', columns='Fileira', values='Text')
     mapa_sty = df_mapa.pivot(index='Nivel', columns='Fileira', values='Style')
     
-    # Render
     st.write(
         mapa_txt.sort_index(ascending=False)
         .style.apply(lambda x: mapa_sty, axis=None)
