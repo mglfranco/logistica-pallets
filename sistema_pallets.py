@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 import string
 import time
+import io # Import para criar o arquivo Excel na memória
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Logística Pro - Master", page_icon="🚜")
@@ -219,11 +220,17 @@ def salvar_dados():
             
             conn.update(worksheet="Estoque", data=df_estoque)
             
-            # Salva Config Ruas
-            df_cfg = pd.DataFrame([
-                {'Rua': k, 'Capacidade': v.get('cap', 41), 'Altura': v.get('alt', 3), 'Galpao': v.get('galpao', 'Principal')} 
-                for k, v in st.session_state.config_ruas.items()
-            ])
+            # Salva Config Ruas (AGORA COM CHAVE COMPOSTA)
+            dados_config = []
+            for (g, r), v in st.session_state.config_ruas.items():
+                dados_config.append({
+                    'Galpao': g,
+                    'Rua': r,
+                    'Capacidade': v.get('cap', 41),
+                    'Altura': v.get('alt', 3)
+                })
+            
+            df_cfg = pd.DataFrame(dados_config)
             conn.update(worksheet="Config_Ruas", data=df_cfg)
             
             # Salva Config Global e Lista de Galpões
@@ -264,13 +271,15 @@ def carregar_dados():
         except Exception:
             pass
 
-        # Carrega Config Ruas
+        # Carrega Config Ruas (COM CHAVE COMPOSTA)
         try:
             df_c = conn.read(worksheet="Config_Ruas", ttl=0)
             if df_c is not None and not df_c.empty:
                 st.session_state.config_ruas = {} 
                 for _, row in df_c.iterrows():
-                    st.session_state.config_ruas[row['Rua']] = {
+                    # Chave composta: (Galpao, Rua)
+                    chave = (row.get('Galpao', 'Principal'), row['Rua'])
+                    st.session_state.config_ruas[chave] = {
                         'cap': int(row.get('Capacidade', 41)), 
                         'alt': int(row.get('Altura', 3)),
                         'galpao': row.get('Galpao', 'Principal')
@@ -346,7 +355,10 @@ def inicializar_rua(nome_galpao, nome_rua, capacidade, altura_max):
         st.session_state.estoque = st.session_state.estoque[~mask]
     
     st.session_state.estoque = pd.concat([st.session_state.estoque, df_nova], ignore_index=True)
-    st.session_state.config_ruas[nome_rua] = {'cap': capacidade, 'alt': altura_max, 'galpao': nome_galpao}
+    
+    # SALVA A CONFIGURAÇÃO USANDO CHAVE COMPOSTA (GALPAO, RUA)
+    chave_config = (nome_galpao, nome_rua)
+    st.session_state.config_ruas[chave_config] = {'cap': capacidade, 'alt': altura_max, 'galpao': nome_galpao}
     salvar_dados()
 
 # --- SIDEBAR (CONTROLES) ---
@@ -390,7 +402,10 @@ with st.sidebar:
         inicializar_rua(galpao_sel, rua_sel, 41, 3)
 
     with st.expander("🏗️ Configurar Rua"):
-        cfg_atual = st.session_state.config_ruas.get(rua_sel, {'cap': 41, 'alt': 3})
+        # BUSCA CONFIGURAÇÃO ESPECÍFICA DO GALPÃO ATUAL
+        chave_busca = (galpao_sel, rua_sel)
+        cfg_atual = st.session_state.config_ruas.get(chave_busca, {'cap': 41, 'alt': 3})
+        
         novo_cap = st.number_input("Capacidade", 1, 60, int(cfg_atual['cap']))
         novo_alt = st.selectbox("Altura Máxima", [1, 2, 3], index=int(cfg_atual['alt'])-1)
         
@@ -409,7 +424,10 @@ st.title(f"🚜 {galpao_sel} > {rua_sel}")
 # Dados da Rua Atual
 mask_atual = (st.session_state.estoque['Galpao'] == galpao_sel) & (st.session_state.estoque['Rua'] == rua_sel)
 df_atual = st.session_state.estoque[mask_atual].copy()
-cap_rua = st.session_state.config_ruas.get(rua_sel, {}).get('cap', 41)
+
+# Busca Capacidade (USANDO CHAVE COMPOSTA)
+chave_busca_main = (galpao_sel, rua_sel)
+cap_rua = st.session_state.config_ruas.get(chave_busca_main, {}).get('cap', 41)
 
 # KPI
 qtd_vazio = len(df_atual[df_atual['Status'] == 'Vazio'])
@@ -561,6 +579,42 @@ with tab_sai:
 with tab_rel:
     st.subheader("📊 Relatórios e Pesquisa")
     
+    # --- EXPORTAÇÃO EXCEL ---
+    st.markdown("### 📤 Exportar Dados para Excel")
+    
+    if st.button("Gerar Arquivo Excel"):
+        if not st.session_state.estoque.empty:
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                # Aba 1: Resumo
+                df_resumo = st.session_state.estoque[st.session_state.estoque['Status'] != 'Vazio'].groupby(
+                    ['Galpao', 'Produto']
+                ).agg(
+                    Total_Pallets=('ID', 'count'),
+                    Total_Itens=('Qtd_Itens', 'sum')
+                ).reset_index()
+                df_resumo.to_excel(writer, sheet_name='Resumo', index=False)
+                
+                # Aba 2: Detalhado (Raw Data)
+                df_detalhe = st.session_state.estoque[st.session_state.estoque['Status'] != 'Vazio'].copy()
+                if not df_detalhe.empty:
+                    # Organiza colunas
+                    colunas_export = ['Galpao', 'Rua', 'ID', 'Produto', 'Lote', 'Qtd_Itens', 'Validade', 'Status', 'Cliente', 'Data_Entrada']
+                    # Garante que só exporta colunas que existem
+                    colunas_existentes = [c for c in colunas_export if c in df_detalhe.columns]
+                    df_detalhe[colunas_existentes].to_excel(writer, sheet_name='Detalhado', index=False)
+            
+            st.download_button(
+                label="📥 Baixar Planilha (.xlsx)",
+                data=buffer,
+                file_name=f"estoque_logistica_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.ms-excel"
+            )
+        else:
+            st.warning("O estoque está vazio, nada para exportar.")
+    
+    st.divider()
+
     # Pesquisa Global
     termo = st.text_input("🔎 Pesquisar Produto ou Lote (Em todos os galpões)")
     
