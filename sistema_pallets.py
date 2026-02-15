@@ -195,7 +195,8 @@ st.markdown("""
 # --- TENTA IMPORTAR A CONEXÃO COM GOOGLE SHEETS ---
 try:
     from streamlit_gsheets import GSheetsConnection
-    if "gsheets" in st.secrets:
+    # Verifica se a chave 'gsheets' está nas secrets (direto ou dentro de 'connections')
+    if "gsheets" in st.secrets or ("connections" in st.secrets and "gsheets" in st.secrets["connections"]):
         GSHEETS_DISPONIVEL = True
     else:
         GSHEETS_DISPONIVEL = False
